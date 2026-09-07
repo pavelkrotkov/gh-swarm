@@ -30,7 +30,7 @@ def _slot(runtime,key,kanban,execution):
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
     attempt=int(cursor.get("attempt") or 1); facts=kanban.observe(str(cursor["task_id"])); execution[key]=f"{facts.status}:a{attempt}"
     if _starved(facts): return ExecutionState.FAILED,f"execution task {facts.task_id} has no worker run after one reconcile interval"
-    if facts.outcome in {Outcome.ACTIVE,Outcome.SUCCESS}: return ExecutionState.RUNNING,None
+    if facts.outcome in {Outcome.ACTIVE,Outcome.SUCCESS}: return {Outcome.ACTIVE:ExecutionState.RUNNING,Outcome.SUCCESS:ExecutionState.IDLE}[facts.outcome],None
     return (ExecutionState.FAILED,f"execution attempts exhausted for {key}") if attempt>=runtime.max_attempts else (ExecutionState.IDLE,None)
 def _reviews(runtime,github,kanban,execution):
     pr=github.pull_request; present=set(map(lambda row:row.slot,pr.reviewers)); missing=set(range(1,len(runtime.config.reviewer_models)+1))-present
