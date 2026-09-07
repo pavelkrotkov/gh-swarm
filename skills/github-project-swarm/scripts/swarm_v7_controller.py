@@ -4,14 +4,14 @@
 # approval, merge completion, dependency release, or other semantic workflow state.
 from collections import namedtuple
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path; import time
 from swarm_v7 import Action, AdjudicationDecision, ExecutionState, ManifestV7, ReviewState, plan_issue
 from swarm_v7_github import GhReader, observe_issue as observe_github
 from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
 from swarm_v7_merge import GhMerger, request_exact_head_merge
 from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
 from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
-_CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}
+_CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
 def _need(ok,message):
     if not ok: raise ValueError(message)
 def _runtime_values(data):
@@ -24,12 +24,12 @@ class RuntimeManifest:
         data=dict(raw); _need(data.get("schema")==7,f"unsupported swarm schema {data.get('schema')!r}; v7 does not migrate schema 5/6 manifests; initialize a fresh schema-7 swarm"); bad=set(data)-(_CONFIG|{"runtime"}); _need(not bad,f"schema-7 runtime manifest forbids legacy/unknown fields: {sorted(bad)}"); return cls(ManifestV7.from_dict({key:data[key] for key in _CONFIG if key in data}),*_runtime_values(data))
     def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
-def _starved(facts): return facts.outcome is Outcome.ACTIVE and not facts.has_run
+def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and time.time()-float(cursor.get("created_at") or 0)>=_STARTUP_GRACE_S
 def _slot(runtime,key,kanban,execution):
     cursor=runtime.cursors.get(key)
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
     attempt=int(cursor.get("attempt") or 1); facts=kanban.observe(str(cursor["task_id"])); execution[key]=f"{facts.status}:a{attempt}"
-    if _starved(facts): return ExecutionState.FAILED,f"execution task {facts.task_id} has no worker run after one reconcile interval"
+    if _starved(facts,cursor): return ExecutionState.FAILED,f"execution task {facts.task_id} has no worker run after {_STARTUP_GRACE_S}s startup grace"
     if facts.outcome in {Outcome.ACTIVE,Outcome.SUCCESS}: return {Outcome.ACTIVE:ExecutionState.RUNNING,Outcome.SUCCESS:ExecutionState.IDLE}[facts.outcome],None
     return (ExecutionState.FAILED,f"execution attempts exhausted for {key}") if attempt>=runtime.max_attempts else (ExecutionState.IDLE,None)
 def _reviews(runtime,github,kanban,execution):
@@ -59,7 +59,7 @@ def observation_payload(observed):
 def dispatch_attempts(runtime,adapter,key,spec):
     _need(runtime.max_attempts>0,"max_execution_attempts must be positive")
     for attempt in range(1,runtime.max_attempts+1):
-        task=adapter.create(spec,key,attempt); runtime.cursors[key]={"task_id":task,"attempt":attempt}; facts=adapter.observe(task)
+        task=adapter.create(spec,key,attempt); runtime.cursors[key]={"task_id":task,"attempt":attempt,"created_at":time.time()}; facts=adapter.observe(task)
         if facts.outcome is not Outcome.FAILURE: return ActionResult(facts.outcome.value,(task,),f"attempt {attempt}: {facts.status}")
     return ActionResult("exhausted",(task,),"bounded execution attempts exhausted")
 def _worker(ctx,plan,revision):
@@ -73,7 +73,7 @@ def _target(ctx):
 def _remember(runtime,results):
     tasks=[]
     for result in results:
-        if result.task_id and result.attempt: runtime.cursors[result.semantic_key]={"task_id":result.task_id,"attempt":result.attempt}; tasks.append(result.task_id)
+        if result.task_id and result.attempt: runtime.cursors[result.semantic_key]={"task_id":result.task_id,"attempt":result.attempt,"created_at":time.time()}; tasks.append(result.task_id)
     return ActionResult("dispatched",tuple(tasks),", ".join(result.state.value for result in results))
 def _start_review(ctx,adjudicate):
     pr,target=_target(ctx); rows=() if pr.adjudication is None else (pr.adjudication,); results=(reconcile_adjudication(ctx.runtime.config,target,pr.reviewers,rows,ctx.kanban,ctx.runtime.max_attempts),) if adjudicate else reconcile_reviewers(ctx.runtime.config,target,pr.reviewers,ctx.kanban,ctx.runtime.max_attempts); return _remember(ctx.runtime,results)
