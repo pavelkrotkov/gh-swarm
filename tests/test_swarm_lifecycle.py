@@ -76,7 +76,7 @@ class LifecycleTests(unittest.TestCase):
         args=SimpleNamespace(repo="owner/repo",repo_path="/repo",issues="1",epic=None,name="demo",board=None,assignee="sat-swarm",worker="worker",reviewer=["r1","r2"],adjudicator=None,ci_mode="required",paused=True,max_execution_attempts=2,max_runtime="30m"); reader=Mock(); reader.get.side_effect=[{"number":1,"state":"open"},{"default_branch":"main"}]
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"GhReader",return_value=reader),patch.object(cli,"GitWorkspace") as workspace,patch.object(cli,"KanbanAdapter") as kanban,patch.object(cli,"save") as save:
             cli.init(args)
-        workspace.return_value.validate_binding.assert_called_once_with("owner/repo"); kanban.return_value.create_board.assert_called_once(); save.assert_called_once_with(save.call_args.args[0]); self.assertEqual(save.call_args.args[0].assignee,"sat-swarm")
+        workspace.return_value.validate_binding.assert_called_once_with("owner/repo"); kanban.return_value.create_board.assert_called_once(); save.assert_called_once(); self.assertEqual(save.call_args.args[0].assignee,"sat-swarm")
     def test_disable_targets_only_swarm_units(self):
         with patch.object(cli,"systemctl") as systemctl: cli.disable()
         self.assertEqual([call.args for call in systemctl.call_args_list],[("disable","--now","hermes-swarm-reconcile.timer"),("stop","hermes-swarm-reconcile.service")])
