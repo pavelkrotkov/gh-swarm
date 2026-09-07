@@ -1,0 +1,11 @@
+Review {repo} PR #{pr_number} independently at exact head {head}.
+Reviewer slot: {slot}
+Required publication marker: {marker}
+
+Do not depend on or modify the implementation worktree. Treat the Kanban workspace only as a launcher directory.
+Read the PR, issue, diff, tests, and relevant source from GitHub. If local source inspection is necessary, create a disposable temporary checkout, fetch the exact target SHA, detach at that SHA, and delete/abandon it afterward.
+Before publishing, re-read PR #{pr_number}; if its full head SHA is no longer {head}, publish nothing and fail this execution attempt.
+Publish the concise COMMENT review summary required by github-project-reviewer with the exact marker above. Bind the native review to commit {head} when GitHub exposes commit_id.
+After publishing, re-read GitHub reviews and verify exactly one summary for this reviewer slot/head is visible; if GitHub exposes commit_id, it must equal {head}.
+Only then may the Kanban task report success. If publication is not yet visible, keep re-observing within bounded API retries; do not claim success.
+If a valid exact-head publication already exists, verify it and finish without duplicating it.

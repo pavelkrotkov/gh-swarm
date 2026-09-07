@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile Hermes GitHub project swarms every two minutes
+
+[Timer]
+OnActiveSec=2min
+OnUnitInactiveSec=2min
+
+[Install]
+WantedBy=timers.target
