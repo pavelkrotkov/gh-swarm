@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Hermes GitHub project swarms
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.hermes/hermes-agent/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env hermes swarm reconcile --all
+TimeoutStartSec=15min
+KillMode=control-group
