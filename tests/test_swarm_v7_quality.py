@@ -1,4 +1,4 @@
-import contextlib, io, sys, tempfile, unittest
+import sys, unittest
 from pathlib import Path
 ROOT=Path(__file__).parents[1]; TOOLS=ROOT/"tools"
 if str(TOOLS) not in sys.path: sys.path.insert(0,str(TOOLS))
