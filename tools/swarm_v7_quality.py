@@ -103,7 +103,7 @@ def function_metrics(text):
         rows.append(FunctionMetric(name,node.lineno,(node.end_lineno or node.lineno)-node.lineno+1,by_line[node.lineno],get_cognitive_complexity(node),max_nesting_depth(node)))
     return rows
 def core_role(path,name): return CORE_PATHS.get((path.name,name))
-def complexity_failures(path,text,baseline=None,*,mode=QUALIFICATION):
+def complexity_failures(path,text,_baseline=None,*,mode=QUALIFICATION):
     failures=[]
     for name,(line,value) in complexities(text).items():
         role=core_role(path,name); limit=MAX_CORE_CYCLOMATIC if role else MAX_CYCLOMATIC
