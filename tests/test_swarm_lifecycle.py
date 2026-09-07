@@ -7,7 +7,7 @@ if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli
 import swarm_v7_cli_process as process
 from swarm_v7 import Action, AdjudicationDecision, CiState, ExecutionState, ManifestV7, Observation, Phase, Plan, ReviewState, plan_issue
-from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _slot, _worker, dispatch_attempts
+from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, dispatch_attempts
 from swarm_v7_github import GitHubIssueObservation
 from swarm_v7_kanban import Outcome, semantic_key
 LEGACY=("lifecycle.py","observability.py","swarm.py","swarm_v6.py","swarm_legacy.py")
@@ -44,10 +44,19 @@ class LifecycleTests(unittest.TestCase):
     def test_attempt_cursor_survives_observation_failure(self):
         rt=runtime(issues=(1,)); adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.side_effect=RuntimeError("lost observation"); key="issue:1:implementation"
         with self.assertRaisesRegex(RuntimeError,"lost observation"): dispatch_attempts(rt,adapter,key,Mock())
-        self.assertEqual(rt.cursors[key],{"task_id":"task-1","attempt":1})
-    def test_active_task_without_worker_run_fails_closed_next_reconcile(self):
-        rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-1","attempt":1}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1"); state,reason=_slot(rt,key,adapter,{})
+        self.assertEqual(rt.cursors[key]["task_id"],"task-1"); self.assertEqual(rt.cursors[key]["attempt"],1); self.assertIn("created_at",rt.cursors[key])
+    def test_new_task_grace_survives_restart_and_worker_start(self):
+        rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.side_effect=(SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1"),SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1"),SimpleNamespace(outcome=Outcome.ACTIVE,status="running",has_run=True,task_id="task-1"))
+        with patch("swarm_v7_controller.time.time",side_effect=(1000,1100)): result=dispatch_attempts(rt,adapter,key,Mock()); rt=RuntimeManifest.from_dict(rt.to_dict()); waiting=_slot(rt,key,adapter,{}); running=_slot(rt,key,adapter,{})
+        self.assertEqual(result.outcome,"active"); self.assertEqual(waiting,(ExecutionState.RUNNING,None)); self.assertEqual(running,(ExecutionState.RUNNING,None))
+    def test_active_task_without_worker_run_fails_closed_after_grace(self):
+        rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-1","attempt":1,"created_at":1000}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1")
+        with patch("swarm_v7_controller.time.time",return_value=1300): state,reason=_slot(rt,key,adapter,{})
         self.assertEqual(state,ExecutionState.FAILED); self.assertIn("no worker run",reason)
+    def test_review_tasks_get_the_same_startup_grace(self):
+        rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
+        with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
+        self.assertEqual(rt.cursors["review-key"],{"task_id":"task-r","attempt":1,"created_at":1000})
     def test_exhausted_implementation_attempt_fails_closed(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-2","attempt":2}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.FAILURE,status="blocked",has_run=True,task_id="task-2"); state,reason=_slot(rt,key,adapter,{})
         self.assertEqual(state,ExecutionState.FAILED); self.assertIn("attempts exhausted",reason)
