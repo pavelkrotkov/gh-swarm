@@ -23,5 +23,5 @@ class SwarmV7QualityTests(unittest.TestCase):
     def test_public_quality_policy_has_no_private_history_dependency(self):
         text=(ROOT/"tools/swarm_v7_quality.py").read_text(); self.assertNotIn("PRE_V7_BASE_SHA",text); self.assertNotIn("WHOLE_RUNTIME_BASE_SHA",text); self.assertEqual(quality.make_parser().parse_args([]).mode,quality.QUALIFICATION)
     def test_canonical_ci_runs_absolute_quality_gate(self):
-        ci=(ROOT/"tools/ci_validate.py").read_text(); self.assertIn('"tools/swarm_v7_quality.py", "--qualification"',ci)
+        ci=(ROOT/"tools/ci_validate.py").read_text(); self.assertIn('"tools/swarm_v7_quality.py","--qualification"',ci)
 if __name__=="__main__": unittest.main()
