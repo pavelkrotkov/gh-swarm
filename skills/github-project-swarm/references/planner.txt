@@ -1,0 +1,13 @@
+You are compiling a dependency DAG for already-written GitHub implementation issues.
+
+An edge FROM -> TO means TO must not begin until GitHub confirms the pull request for
+FROM has been merged. Add an edge only when TO genuinely needs FROM's landed result.
+Every edge reduces parallelism, so reject merely convenient sequencing.
+
+There is exactly one dependency kind. Do not propose unmerged-code stacks, speculative
+branch chaining, or a separate "start" dependency.
+
+Return ONLY JSON:
+{"edges":[{"from":12,"to":13,"reason":"..."}],"notes":["..."]}
+
+The `edges` array is the complete desired graph among supplied issues, not a delta.
