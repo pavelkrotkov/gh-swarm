@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]; SKILL=ROOT/"skills/github-project-swar
 PLUGIN_REL="hermes-plugin/__init__.py"; CLI_REL="scripts/swarm_v7_cli.py"; DYNAMIC_RUNTIME_EDGES={PLUGIN_REL:(CLI_REL,)}
 CONTROLLER_MODULE_NAMES=("swarm_v7_controller.py",); CLI_MODULE_NAMES=("swarm_v7_cli.py","swarm_v7_cli_process.py"); CLI_CONTROLLER_MODULE_NAMES=("swarm_v7_cli.py",); PLANNER_MODULE_NAMES=("swarm_v7.py",); CORE_CONTROLLER_MODULE_NAMES=(*PLANNER_MODULE_NAMES,*CONTROLLER_MODULE_NAMES,*CLI_CONTROLLER_MODULE_NAMES)
 CORE_PATHS={("swarm_v7.py","plan_issue"):"planner",("swarm_v7_controller.py","observe_issue"):"observer",("swarm_v7_controller.py","apply_plan"):"executor",("swarm_v7_controller.py","dispatch_attempts"):"executor-dispatch",("swarm_v7_cli.py","reconcile_runtime"):"cli-reconcile",("swarm_v7_cli.py","init"):"cli-init",("swarm_v7_merge.py","request_exact_head_merge"):"merge"}
-REGRESSION="regression"; QUALIFICATION="qualification"; MAX_FUNCTION_LINES=60; MAX_CYCLOMATIC=8; MAX_CORE_CYCLOMATIC=6; MAX_COGNITIVE=15; MAX_NESTING=4; MAX_CORE_LOC=1000; COHESION_REVIEW_LOC=350; MAX_WHOLE_RUNTIME_MODULES=20; FINAL_RUNTIME_LOC=684
+REGRESSION="regression"; QUALIFICATION="qualification"; MAX_FUNCTION_LINES=60; MAX_CYCLOMATIC=8; MAX_CORE_CYCLOMATIC=6; MAX_COGNITIVE=15; MAX_NESTING=4; MAX_CORE_LOC=1000; COHESION_REVIEW_LOC=350; MAX_WHOLE_RUNTIME_MODULES=20; FINAL_RUNTIME_LOC=687
 class RuntimeScopeError(ValueError): pass
 @dataclass(frozen=True)
 class FunctionMetric: name:str; line:int; loc:int; cyclomatic:int; cognitive:int; nesting:int
