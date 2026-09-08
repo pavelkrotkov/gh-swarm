@@ -24,7 +24,8 @@ class RuntimeManifest:
         data=dict(raw); _need(data.get("schema")==7,f"unsupported swarm schema {data.get('schema')!r}; v7 does not migrate schema 5/6 manifests; initialize a fresh schema-7 swarm"); bad=set(data)-(_CONFIG|{"runtime"}); _need(not bad,f"schema-7 runtime manifest forbids legacy/unknown fields: {sorted(bad)}"); return cls(ManifestV7.from_dict({key:data[key] for key in _CONFIG if key in data}),*_runtime_values(data))
     def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
-def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and time.time()-float(cursor.get("created_at") or 0)>=_STARTUP_GRACE_S
+def _starved(facts,cursor):
+    age=time.time()-float(cursor.get("created_at") or 0); return facts.outcome is Outcome.ACTIVE and not facts.has_run and (age<0 or age>=_STARTUP_GRACE_S)
 def _slot(runtime,key,kanban,execution):
     cursor=runtime.cursors.get(key)
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
