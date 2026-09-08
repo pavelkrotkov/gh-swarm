@@ -2,14 +2,11 @@
 # GitHub owns semantic truth; cursors identify attempts only and are re-observed after restart.
 # Execution may prepare worktrees or launch bounded tasks, but completion never becomes
 # approval, merge completion, dependency release, or other semantic workflow state.
-from collections import namedtuple
-from dataclasses import dataclass, replace
+from collections import namedtuple; from dataclasses import dataclass, replace
 from pathlib import Path; import time
 from swarm_v7 import Action, AdjudicationDecision, ExecutionState, ManifestV7, ReviewState, plan_issue
-from swarm_v7_github import GhReader, observe_issue as observe_github
-from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
-from swarm_v7_merge import GhMerger, request_exact_head_merge
-from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
+from swarm_v7_github import GhReader, observe_issue as observe_github; from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
+from swarm_v7_merge import GhMerger, request_exact_head_merge; from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
 from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 _CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
 def _need(ok,message):
@@ -63,8 +60,9 @@ def dispatch_attempts(runtime,adapter,key,spec):
         if facts.outcome is not Outcome.FAILURE: return ActionResult(facts.outcome.value,(task,),f"attempt {attempt}: {facts.status}")
     return ActionResult("exhausted",(task,),"bounded execution attempts exhausted")
 def _worker(ctx,plan,revision):
-    issue=ctx.observed.github.issue_number; branch=branch_name(ctx.runtime.config.swarm_id,issue); path=worktree_path(ctx.runtime.repo_path,ctx.runtime.config.swarm_id,issue); kind=plan.action.value.removeprefix("START_").lower(); key=semantic_key(ctx.runtime.config.swarm_id,issue,kind,head=plan.pr_head if revision else None); base=ctx.workspace.prepare(WorkspaceSpec(ctx.runtime.config.repo,ctx.runtime.config.default_branch,branch,path),started=isinstance(ctx.runtime.cursors.get(key),dict) or revision,pr_exists=ctx.observed.github.pull_request is not None); row=ctx.reader.get(f"repos/{ctx.runtime.config.repo}/issues/{issue}"); text=str(row.get("body") or "") if isinstance(row,dict) else ""
-    if revision: text+=f"\n\nApply only the exact-head GitHub adjudication for {plan.pr_head}. Re-read that durable decision before editing."
+    issue=ctx.observed.github.issue_number; branch=branch_name(ctx.runtime.config.swarm_id,issue); path=worktree_path(ctx.runtime.repo_path,ctx.runtime.config.swarm_id,issue); kind="revision" if revision else "implementation"; key=semantic_key(ctx.runtime.config.swarm_id,issue,kind,head=plan.pr_head if revision else None); base=ctx.workspace.prepare(WorkspaceSpec(ctx.runtime.config.repo,ctx.runtime.config.default_branch,branch,path),started=isinstance(ctx.runtime.cursors.get(key),dict) or revision,pr_exists=ctx.observed.github.pull_request is not None); stale=not ctx.workspace.ancestor(base,f"refs/heads/{branch}"); row=ctx.reader.get(f"repos/{ctx.runtime.config.repo}/issues/{issue}"); text=str(row.get("body") or "") if isinstance(row,dict) else ""
+    if revision: text+=f"\n\nRe-read exact-head GitHub CI/review/adjudication feedback for {plan.pr_head} before editing."
+    if stale: text+=f"\n\nBefore any other work, merge exact prepared base {base} into {branch}; resolve conflicts by preserving only issue-scoped changes, then continue. Do not rebase or force-push."
     model,provider=_model(ctx.runtime.config.worker_model); spec=TaskSpec(f"[{'revise' if revision else 'implement'}] #{issue}",worker_body(ctx.runtime.config.repo,issue,branch,ctx.runtime.config.default_branch,base,text,revision=revision),f"dir:{path}",model,ctx.runtime.assignee,provider=provider,skills=("ponytail",),max_runtime=ctx.runtime.max_runtime); return dispatch_attempts(ctx.runtime,ctx.kanban,key,spec)
 def _target(ctx):
     pr=ctx.observed.github.pull_request
@@ -85,4 +83,6 @@ def apply_plan(runtime,planned,*,reader=None,kanban=None,workspace=None,merger=N
     if planned.plan.action is None: return ActionResult("suppressed" if planned.plan.would_action else "noop",detail=_need(not planned.observation.planner.unsafe_reason,planned.observation.planner.unsafe_reason) or planned.plan.reason)
     handler=_default(executors,_handlers).get(planned.plan.action)
     if handler is None: raise RuntimeError(f"no executor registered for planned action {planned.plan.action.value}")
-    ctx=ExecutionContext(runtime,planned.observation,_default(reader,GhReader),_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),_default(workspace,lambda:GitWorkspace(runtime.repo_path)),_default(merger,GhMerger)); return handler(ctx,planned.plan)
+    ctx=ExecutionContext(runtime,planned.observation,_default(reader,GhReader),_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),_default(workspace,lambda:GitWorkspace(runtime.repo_path)),_default(merger,GhMerger)); pr=ctx.observed.github.pull_request; default=ctx.workspace.refresh(ctx.runtime.config.default_branch,branch_name(ctx.runtime.config.swarm_id,ctx.observed.github.issue_number))[0] if pr is not None and planned.plan.action is not Action.START_REVISION else None
+    if default is not None and not ctx.workspace.ancestor(default,pr.head): return _worker(ctx,planned.plan,True)
+    return handler(ctx,planned.plan)
