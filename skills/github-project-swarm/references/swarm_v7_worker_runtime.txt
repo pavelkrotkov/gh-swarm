@@ -4,7 +4,7 @@ Expected branch: {branch}
 Default branch: {default_branch}
 Prepared base SHA: {base_sha}
 
-The issue/review feedback below is authoritative. Make only the minimum scoped change and validate it.
+The issue/review feedback below is authoritative. Make only the minimum scoped change and validate it. For changed-code quality gates, verify failures are limited to added/modified lines; when a scanner is only file-scoped, filter machine-readable findings to changed lines while preserving file-level findings, and honor supported project/script dependency metadata or suppressions such as PEP 723.
 
 {issue_text}
 
