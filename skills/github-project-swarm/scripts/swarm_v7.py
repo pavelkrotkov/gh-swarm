@@ -26,7 +26,7 @@ def _enum(name,values): return Enum(name,{v:v for v in values.split()},type=str)
 Phase=_enum("Phase","MERGED WAITING_DEPENDENCY NEEDS_IMPLEMENTATION IMPLEMENTATION_RUNNING WAITING_CI NEEDS_REVIEW REVIEW_RUNNING NEEDS_ADJUDICATION ADJUDICATION_RUNNING NEEDS_REVISION REVISION_RUNNING READY_TO_MERGE EXECUTION_STALLED"); Action=_enum("Action","START_IMPLEMENTATION START_REVIEW START_ADJUDICATION START_REVISION MERGE"); DependencyState=_enum("DependencyState","READY BLOCKED UNKNOWN"); ExecutionState=_enum("ExecutionState","IDLE RUNNING FAILED"); CiState=_enum("CiState","NOT_APPLICABLE PENDING PASSED FAILED UNKNOWN"); ReviewState=_enum("ReviewState","NONE RUNNING APPROVED CHANGES_REQUESTED DISPUTED UNKNOWN"); AdjudicationDecision=_enum("AdjudicationDecision","NONE ACCEPT REVISE UNKNOWN"); MergeGate=_enum("MergeGate","READY BLOCKED UNKNOWN")
 @dataclass(frozen=True)
 class Observation:
-    issue_number:int; merged:bool=False; dependency:DependencyState=DependencyState.READY; pr_head:str|None=None; implementation:ExecutionState=ExecutionState.IDLE; ci:CiState=CiState.NOT_APPLICABLE; review:ReviewState=ReviewState.NONE; adjudication:ExecutionState=ExecutionState.IDLE; adjudication_decision:AdjudicationDecision=AdjudicationDecision.NONE; revision:ExecutionState=ExecutionState.IDLE; merge_gate:MergeGate=MergeGate.READY; unsafe_reason:str|None=None
+    issue_number:int; merged:bool=False; dependency:DependencyState=DependencyState.READY; pr_head:str|None=None; implementation:ExecutionState=ExecutionState.IDLE; ci:CiState=CiState.NOT_APPLICABLE; review:ReviewState=ReviewState.NONE; adjudication:ExecutionState=ExecutionState.IDLE; adjudication_decision:AdjudicationDecision=AdjudicationDecision.NONE; revision:ExecutionState=ExecutionState.IDLE; merge_gate:MergeGate=MergeGate.READY; merge_confirmed:bool=False; unsafe_reason:str|None=None
 @dataclass(frozen=True)
 class Plan:
     phase:Phase; action:Action|None; reason:str; pr_head:str|None; intent_key:str|None; would_action:Action|None=None
@@ -50,7 +50,8 @@ def _decision(obs,config):
     bad=_unsafe(obs)
     if bad: return bad
     if obs.issue_number not in config.issues: return _STALL,None,"issue is not configured for this swarm"
-    if obs.merged: return Phase.MERGED,None,"pull request is merged"
+    if obs.merged: return Phase.MERGED,None,"pull request is merged and source issue is closed"
+    if obs.merge_confirmed: return Phase.READY_TO_MERGE,Action.MERGE,"pull request is merged; source issue needs closure"
     if obs.dependency in _DEP: return _DEP[obs.dependency]
     if obs.pr_head is None: return _EXEC.get(obs.implementation,(Phase.NEEDS_IMPLEMENTATION,Action.START_IMPLEMENTATION,"no pull request exists"))
     return _with_pr(obs,config)
