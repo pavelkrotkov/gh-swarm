@@ -333,6 +333,7 @@ class RaceAndCompletionTests(unittest.TestCase):
         first = AfterCrash()
         with self.assertRaisesRegex(RuntimeError, "after successful"):
             merge.request_exact_head_merge(config(), 50, H1, reader, first)
+        reader.values["repos/owner/repo/issues/50"]["state"] = "closed"
         second = FakeMerger()
         result = merge.request_exact_head_merge(config(), 50, H1, reader, second)
         self.assertEqual(first.calls, 1)
@@ -342,7 +343,7 @@ class RaceAndCompletionTests(unittest.TestCase):
 
     def test_fresh_merged_at_is_the_only_dependency_release_fact(self):
         merged_at = "2026-09-04T13:31:00Z"
-        reader = reader_for(pr_row=pr(state="closed", merged_at=merged_at))
+        reader = reader_for(pr_row=pr(state="closed", merged_at=merged_at), issue_extra={"state": "closed"})
         result = merge.request_exact_head_merge(config(), 50, H1, reader, FakeMerger())
         self.assertEqual(result.state, merge.MergeResultState.GITHUB_CONFIRMED)
         facts, state = gh._dependency_observation(
