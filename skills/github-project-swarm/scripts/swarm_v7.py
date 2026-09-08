@@ -47,8 +47,7 @@ def _with_pr(obs,config):
     if obs.adjudication_decision is AdjudicationDecision.ACCEPT: return _merge(obs,"adjudication accepted current PR head")
     return {AdjudicationDecision.REVISE:(Phase.NEEDS_REVISION,Action.START_REVISION,"adjudication requires revision"),AdjudicationDecision.NONE:(Phase.NEEDS_ADJUDICATION,Action.START_ADJUDICATION,"review outcomes require adjudication")}.get(obs.adjudication_decision,(_STALL,None,"adjudication decision is unknown"))
 def _decision(obs,config):
-    bad=_unsafe(obs)
-    if bad: return bad
+    if bad:=_unsafe(obs): return bad
     if obs.issue_number not in config.issues: return _STALL,None,"issue is not configured for this swarm"
     if obs.merged: return Phase.MERGED,None,"pull request is merged and source issue is closed"
     if obs.merge_confirmed: return Phase.READY_TO_MERGE,Action.MERGE,"pull request is merged; source issue needs closure"
