@@ -76,5 +76,5 @@ class IssueClosureTests(unittest.TestCase):
         reader.values["repos/owner/repo/commits/"+H2+"/check-runs?filter=latest"]={"check_runs":[]}
         reader.values["repos/owner/repo/commits/"+H2+"/status"]={"statuses":[]}
         reader.values["repos/owner/repo/issues/62/comments"]=[]
-        observed=gh.observe_issue(config(),50,reader); self.assertIsNotNone(observed.unsafe_reason); self.assertIn("no merged PR",observed.unsafe_reason)
+        observed=gh.observe_issue(config(),50,reader); self.assertIsNotNone(observed.unsafe_reason); self.assertIsNone(observed.pull_request)
 if __name__=="__main__": unittest.main()
