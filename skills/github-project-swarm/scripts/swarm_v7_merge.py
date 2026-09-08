@@ -18,8 +18,7 @@ class GhMerger:
     def merge(self,repo,number,head):
         head=exact_sha(str(head).strip().lower()); cmd=["gh","api","--method","PUT","-H","Accept: application/vnd.github+json",f"repos/{repo}/pulls/{number}/merge","--input","-"]
         try: response=json.loads(self.runner(cmd,json.dumps({"sha":head},separators=(",",":")),self.timeout_s))
-        except json.JSONDecodeError as exc: raise MergeRequestError("GitHub merge API returned invalid JSON") from exc
-        except RuntimeError as exc: raise MergeRequestError(str(exc)) from exc
+        except (json.JSONDecodeError,RuntimeError) as exc: raise MergeRequestError(str(exc)) from exc
         if not isinstance(response,dict): raise MergeRequestError("GitHub merge API response is not an object")
         if response.get("merged") is not True: raise MergeRequestError(str(response.get("message") or "GitHub did not merge the exact head"))
         return response
@@ -31,7 +30,8 @@ def _finding_id(markers,head,row):
     body=str(row.get("body") or ""); matched=[marker for marker in markers if marker in body]
     if not matched: return None
     if len(matched)!=1 or body.count(matched[0])!=1: raise ValueError("review finding has ambiguous exact-head publication marker")
-    native_head(row,head); return positive_int(row.get("id"),"review finding comment id")
+    try: native_head(row,head); return positive_int(row.get("id"),"review finding comment id")
+    except UnsafeGitHubObservation as exc: raise ValueError("native GitHub finding commit_id differs from current PR head") from exc
 def _findings(config,issue,head,rows):
     markers=tuple(review_marker(config.swarm_id,issue,slot,head) for slot in range(1,len(config.reviewer_models)+1)); values=[value for row in rows if (value:=_finding_id(markers,head,row)) is not None]
     if len(values)!=len(set(values)): raise ValueError(f"duplicate review finding comment id {next(value for value in values if values.count(value)>1)}")
