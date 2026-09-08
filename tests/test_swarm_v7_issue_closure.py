@@ -11,10 +11,11 @@ def config(): return v7.ManifestV7("test","owner/repo","main",(50,),"worker",("r
 def pr(head=H1,merged_at=MERGED_AT): return {"number":61,"state":"closed" if merged_at else "open","draft":False,"base":{"ref":"main"},"head":{"sha":head,"ref":"swarm/test/50"},"mergeable":True,"mergeable_state":"clean","merged_at":merged_at,"labels":[]}
 def cross_ref(number=61): return {"event":"cross-referenced","source":{"issue":{"number":number,"repository_url":"https://api.github.com/repos/owner/repo","pull_request":{"url":f"https://api.github.com/repos/owner/repo/pulls/{number}"}}}}
 class Reader:
-    def __init__(self,state="open",pr_row=None):
-        row=pr_row or pr(); head=row["head"]["sha"]; self.values={"repos/owner/repo/issues/50":{"number":50,"state":state},"repos/owner/repo/issues/50/dependencies/blocked_by":[],"repos/owner/repo/issues/50/timeline":[cross_ref()],"repos/owner/repo/pulls/61":row,f"repos/owner/repo/commits/{head}/check-runs?filter=latest":{"check_runs":[]},f"repos/owner/repo/commits/{head}/status":{"statuses":[]},"repos/owner/repo/pulls/61/reviews":[],"repos/owner/repo/issues/61/comments":[]}
+    def __init__(self,state="open",pr_row=None,graphql_data=None):
+        row=pr_row or pr(); head=row["head"]["sha"]; self.values={"repos/owner/repo/issues/50":{"number":50,"state":state},"repos/owner/repo/issues/50/dependencies/blocked_by":[],"repos/owner/repo/issues/50/timeline":[cross_ref()],"repos/owner/repo/pulls/61":row,f"repos/owner/repo/commits/{head}/check-runs?filter=latest":{"check_runs":[]},f"repos/owner/repo/commits/{head}/status":{"statuses":[]},"repos/owner/repo/pulls/61/reviews":[],"repos/owner/repo/issues/61/comments":[]}; self.graphql_data=graphql_data or {}
     def get(self,endpoint): return self.values.get(endpoint,{})
     def list(self,endpoint): return self.values.get(endpoint,[])
+    def graphql(self,query): return self.graphql_data
 class Writer:
     def __init__(self,reader,*,mutate=True,crash=False): self.reader=reader; self.mutate=mutate; self.crash=crash; self.closes=[]; self.merges=[]
     def merge(self,repo,number,head): self.merges.append((repo,number,head)); return {"merged":True}

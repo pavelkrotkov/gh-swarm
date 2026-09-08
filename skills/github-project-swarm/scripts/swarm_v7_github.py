@@ -34,6 +34,13 @@ class GhReader:
         try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
         except json.JSONDecodeError as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}") from exc
         except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
+    def graphql(self,query):
+        try:
+            result=json.loads(run_command(["gh","api","graphql","-f",f"query={query}"],timeout=self.timeout_s))
+            if "errors" in result: raise GitHubReadError(f"GraphQL query failed: {result['errors']}")
+            return result.get("data") if isinstance(result,dict) else {}
+        except json.JSONDecodeError as exc: raise GitHubReadError("GitHub returned invalid JSON for GraphQL query") from exc
+        except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
     def list(self,endpoint):
         rows=[]
         for page in range(1,101):
@@ -113,20 +120,39 @@ def ci_state(config,raw):
     return CiState.PENDING if CiState.PENDING in states else CiState.PASSED
 def _labels(value): return {str(row.get("name") if isinstance(row,dict) else row).lower() for row in value} if isinstance(value,list) else set()
 def _same_repo(issue,repo): value=str(issue.get("repository_url") or "").rstrip("/"); return not value or value==f"https://api.github.com/repos/{repo}"
-def _linked_prs(reader,repo,issue):
+def _closure_prs(reader,repo,issue):
+    owner,name=repo.split("/",1); query=f'query{{repository(owner:"{owner}",name:"{name}"){{issue(number:{issue}){{closedByPullRequestsReferences(first:10){{nodes{{number,merged,repository{{nameWithOwner}}}}}}}}}}}}'
+    try: data=reader.graphql(query)
+    except Exception: return []
+    nodes=data.get("repository",{}).get("issue",{}).get("closedByPullRequestsReferences",{}).get("nodes") if isinstance(data,dict) else None
+    if not isinstance(nodes,list): return []
+    numbers=set()
+    for node in nodes:
+        if not isinstance(node,dict): continue
+        if not node.get("merged"): continue
+        repo_obj=node.get("repository")
+        if not isinstance(repo_obj,dict) or repo_obj.get("nameWithOwner")!=repo: continue
+        num=node.get("number")
+        if type(num) is not int or num<=0: continue
+        numbers.add(num)
+    return [mapping(reader.get(f"repos/{repo}/pulls/{number}"),f"PR {number}") for number in sorted(numbers)]
+def _timeline_prs(reader,repo,issue):
     numbers=set()
     for event in reader.list(f"repos/{repo}/issues/{issue}/timeline"):
         source=event.get("source") if event.get("event")=="cross-referenced" else None; linked=source.get("issue") if isinstance(source,dict) else None
         if isinstance(linked,dict) and _same_repo(linked,repo) and isinstance(linked.get("pull_request"),dict): numbers.add(positive_int(linked.get("number"),"linked PR number"))
     return [mapping(reader.get(f"repos/{repo}/pulls/{number}"),f"PR {number}") for number in sorted(numbers)]
+def _linked_prs(reader,repo,issue,issue_state=None):
+    if issue_state=="CLOSED": prs=_closure_prs(reader,repo,issue); return prs if prs else _timeline_prs(reader,repo,issue)
+    return _timeline_prs(reader,repo,issue)
 def _branch_prs(prs,branch): return prs if branch is None else [pr for pr in prs if isinstance(pr.get("head"),dict) and pr["head"].get("ref")==branch]
 def _select_pr(prs,branch=None,prefer_merged=False):
     prs=_branch_prs(prs,branch)
     if prefer_merged:
-        return max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr["merged_at"]),default=None)
+        return max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None)
     opened=[pr for pr in prs if str(pr.get("state") or "").lower()=="open"]
     if len(opened)>1: raise UnsafeGitHubObservation("multiple open PRs are linked to the issue")
-    return next(iter(opened),max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr["merged_at"]),default=None))
+    return next(iter(opened),max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None))
 def _merged_at(reader,repo,issue,branch=None): return max((str(pr["merged_at"]) for pr in _branch_prs(_linked_prs(reader,repo,issue),branch) if pr.get("merged_at")),default=None)
 def _issue_branch(config,issue,state=None): return None if state=="CLOSED" else f"swarm/{config.swarm_id}/{issue}"
 def _dependency_observation(config,rows,reader):
@@ -147,7 +173,7 @@ def _with_pr(config,issue,state,blockers,dependency,pr,reader):
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
     planner=Observation(issue,merged,dependency,head,ci=ci_state(config,raw),review=review_state,adjudication_decision=decision,merge_gate=_merge_gate(config,observed),merge_confirmed=confirmed); return GitHubIssueObservation(issue,state,blockers,observed,planner)
 def _observe_issue(config,issue,reader):
-    row=mapping(reader.get(f"repos/{config.repo}/issues/{issue}"),"issue"); state=str(row.get("state") or "").upper(); blockers,dependency=_dependency_observation(config,reader.list(f"repos/{config.repo}/issues/{issue}/dependencies/blocked_by"),reader); pr=_select_pr(_linked_prs(reader,config.repo,issue),_issue_branch(config,issue,state),state=="CLOSED")
+    row=mapping(reader.get(f"repos/{config.repo}/issues/{issue}"),"issue"); state=str(row.get("state") or "").upper(); blockers,dependency=_dependency_observation(config,reader.list(f"repos/{config.repo}/issues/{issue}/dependencies/blocked_by"),reader); pr=_select_pr(_linked_prs(reader,config.repo,issue,state),_issue_branch(config,issue,state),state=="CLOSED")
     if pr is not None: return _with_pr(config,issue,state,blockers,dependency,pr,reader)
     if state!="OPEN": raise UnsafeGitHubObservation("issue is not open and no merged PR is confirmed")
     return GitHubIssueObservation(issue,state,blockers,None,Observation(issue,dependency=dependency))
