@@ -53,7 +53,7 @@ class IdempotencyTests(unittest.TestCase):
 
 class ContractTests(unittest.TestCase):
     def test_all_supported_statuses_map_explicitly_and_unknown_fails_closed(self):
-        expected = {"todo":kb.Outcome.ACTIVE,"ready":kb.Outcome.ACTIVE,"running":kb.Outcome.ACTIVE,"review":kb.Outcome.ACTIVE,"done":kb.Outcome.SUCCESS,**{name:kb.Outcome.FAILURE for name in ("blocked","archived","triage")}}; fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); task_id = adapter.create(spec(), "semantic")
+        expected = {"todo":kb.Outcome.ACTIVE,"ready":kb.Outcome.ACTIVE,"running":kb.Outcome.ACTIVE,"review":kb.Outcome.ACTIVE,"done":kb.Outcome.SUCCESS,"blocked":kb.Outcome.FAILURE,"archived":kb.Outcome.FAILURE,"triage":kb.Outcome.FAILURE}; fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); task_id = adapter.create(spec(), "semantic")
         for status, outcome in expected.items(): fake.tasks[task_id]["status"] = status; self.assertEqual(adapter.observe(task_id).outcome, outcome)
         fake.tasks[task_id]["status"] = "cancelled"
         with self.assertRaises(KeyError): adapter.observe(task_id)
