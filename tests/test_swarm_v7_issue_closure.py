@@ -9,7 +9,7 @@ v7=importlib.import_module("swarm_v7"); gh=importlib.import_module("swarm_v7_git
 H1="1"*40; H2="2"*40; MERGED_AT="2026-09-08T01:00:00Z"
 def config(): return v7.ManifestV7("test","owner/repo","main",(50,),"worker",("reviewer",),"judge")
 def pr(head=H1,merged_at=MERGED_AT): return {"number":61,"state":"closed" if merged_at else "open","draft":False,"base":{"ref":"main"},"head":{"sha":head,"ref":"swarm/test/50"},"mergeable":True,"mergeable_state":"clean","merged_at":merged_at,"labels":[]}
-def cross_ref(): return {"event":"cross-referenced","source":{"issue":{"number":61,"repository_url":"https://api.github.com/repos/owner/repo","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/61"}}}}
+def cross_ref(number=61): return {"event":"cross-referenced","source":{"issue":{"number":number,"repository_url":"https://api.github.com/repos/owner/repo","pull_request":{"url":f"https://api.github.com/repos/owner/repo/pulls/{number}"}}}}
 class Reader:
     def __init__(self,state="open",pr_row=None):
         row=pr_row or pr(); head=row["head"]["sha"]; self.values={"repos/owner/repo/issues/50":{"number":50,"state":state},"repos/owner/repo/issues/50/dependencies/blocked_by":[],"repos/owner/repo/issues/50/timeline":[cross_ref()],"repos/owner/repo/pulls/61":row,f"repos/owner/repo/commits/{head}/check-runs?filter=latest":{"check_runs":[]},f"repos/owner/repo/commits/{head}/status":{"statuses":[]},"repos/owner/repo/pulls/61/reviews":[],"repos/owner/repo/issues/61/comments":[]}
@@ -29,6 +29,9 @@ class IssueClosureTests(unittest.TestCase):
         writer=Writer(reader); result=merge.request_exact_head_merge(config(),50,H1,reader,writer); self.assertEqual(result.state,merge.MergeResultState.GITHUB_CONFIRMED); self.assertEqual(writer.closes,[("owner/repo",50)]); self.assertEqual(reader.values["repos/owner/repo/issues/50"]["state"],"closed")
     def test_already_closed_issue_is_idempotent(self):
         reader=Reader(state="closed"); writer=Writer(reader); result=merge.request_exact_head_merge(config(),50,H1,reader,writer); self.assertEqual(result.state,merge.MergeResultState.GITHUB_CONFIRMED); self.assertEqual(writer.closes,[])
+    def test_closed_issue_keeps_swarm_pr_binding_with_unrelated_open_cross_reference(self):
+        reader=Reader(state="closed"); other=pr(H2,None); other.update(number=62); other["head"]["ref"]="other/branch"; reader.values["repos/owner/repo/issues/50/timeline"].append(cross_ref(62)); reader.values["repos/owner/repo/pulls/62"]=other
+        observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
     def test_close_api_failure_fails_closed(self):
         reader=Reader()
         def runner(cmd,payload,timeout): raise RuntimeError("close failed")
