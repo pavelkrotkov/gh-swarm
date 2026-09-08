@@ -53,18 +53,18 @@ class IdempotencyTests(unittest.TestCase):
 
 class ContractTests(unittest.TestCase):
     def test_all_supported_statuses_map_explicitly_and_unknown_fails_closed(self):
-        expected = {"todo":kb.Outcome.ACTIVE,"ready":kb.Outcome.ACTIVE,"running":kb.Outcome.ACTIVE,"review":kb.Outcome.ACTIVE,"done":kb.Outcome.SUCCESS,"blocked":kb.Outcome.FAILURE,"archived":kb.Outcome.FAILURE,"triage":kb.Outcome.FAILURE}; fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); task_id = adapter.create(spec(), "semantic")
+        expected = {"todo":kb.Outcome.ACTIVE,"ready":kb.Outcome.ACTIVE,"running":kb.Outcome.ACTIVE,"review":kb.Outcome.ACTIVE,"done":kb.Outcome.SUCCESS,**{name:kb.Outcome.FAILURE for name in ("blocked","archived","triage")}}; fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); task_id = adapter.create(spec(), "semantic")
         for status, outcome in expected.items(): fake.tasks[task_id]["status"] = status; self.assertEqual(adapter.observe(task_id).outcome, outcome)
         fake.tasks[task_id]["status"] = "cancelled"
         with self.assertRaises(KeyError): adapter.observe(task_id)
     def test_assignee_and_run_record_are_execution_contract(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({"id":"run-1"}); self.assertTrue(adapter.observe(task_id).has_run)
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
-    def test_live_create_projects_base_github_config_without_copying_token(self):
+    def test_live_create_prepares_headless_worker_for_agents_md_and_github_auth(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); hermes=root/"hermes"; profile=hermes/"profiles"/"swarm-worker"; config=root/"gh"; profile.mkdir(parents=True); config.mkdir(); (config/"hosts.yml").write_text("oauth_token: secret\n"); (profile/".env").write_text("API_KEY=keep\nGH_CONFIG_DIR=/old\n")
-            with patch.dict(os.environ,{"HERMES_HOME":str(hermes),"GH_CONFIG_DIR":str(config),"GH_TOKEN":"outer-secret"},clear=False),patch("swarm_v7_cli_process.subprocess.run",return_value=Mock(returncode=0)) as auth,patch.object(kb,"run_command",return_value='{"task":{"id":"task-1"}}'): task=kb.KanbanAdapter("board").create(spec(),"semantic")
-            text=(profile/".env").read_text(); self.assertEqual(task,"task-1"); self.assertIn("API_KEY=keep",text); self.assertIn(f"GH_CONFIG_DIR={config.resolve()}",text); self.assertNotIn("secret",text); self.assertEqual((profile/".env").stat().st_mode&0o777,0o600); self.assertEqual(auth.call_args.args[0],("gh","auth","status","--active","--hostname","github.com")); self.assertNotIn("GH_TOKEN",auth.call_args.kwargs["env"]); self.assertEqual(auth.call_args.kwargs["env"]["GH_CONFIG_DIR"],str(config.resolve()))
+            with patch.dict(os.environ,{"HERMES_HOME":str(hermes),"GH_CONFIG_DIR":str(config),"GH_TOKEN":"outer-secret"},clear=False),patch("swarm_v7_cli_process.subprocess.run",return_value=Mock(returncode=0)) as auth,patch.object(kb,"run_command",return_value='{"task":{"id":"task-1"}}'): task=kb.KanbanAdapter("board").create(spec(body="create root AGENTS.md"),"semantic")
+            text=(profile/".env").read_text(); self.assertEqual(task,"task-1"); self.assertEqual(auth.call_args_list[0].args[0],("hermes","-p","swarm-worker","config","set","security.protected_instruction_files","false")); self.assertIn("API_KEY=keep",text); self.assertIn(f"GH_CONFIG_DIR={config.resolve()}",text); self.assertNotIn("secret",text); self.assertEqual((profile/".env").stat().st_mode&0o777,0o600); self.assertEqual(auth.call_args.args[0],("gh","auth","status","--active","--hostname","github.com")); self.assertNotIn("GH_TOKEN",auth.call_args.kwargs["env"]); self.assertEqual(auth.call_args.kwargs["env"]["GH_CONFIG_DIR"],str(config.resolve()))
             (config/"hosts.yml").unlink()
             with patch.dict(os.environ,{"HERMES_HOME":str(hermes),"GH_CONFIG_DIR":str(config)},clear=False),patch("swarm_v7_cli_process.subprocess.run") as auth,patch.object(kb,"run_command") as run,self.assertRaisesRegex(RuntimeError,"gh auth login"): kb.KanbanAdapter("board").create(spec(),"blocked")
             auth.assert_not_called(); run.assert_not_called()
