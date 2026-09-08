@@ -33,6 +33,9 @@ class IssueClosureTests(unittest.TestCase):
     def test_closed_issue_keeps_swarm_pr_binding_with_unrelated_open_cross_reference(self):
         reader=Reader(state="closed"); other=pr(H2,None); other.update(number=62); other["head"]["ref"]="other/branch"; reader.values["repos/owner/repo/issues/50/timeline"].append(cross_ref(62)); reader.values["repos/owner/repo/pulls/62"]=other
         observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
+    def test_closed_timeline_fallback_rejects_unrelated_merged_pr(self):
+        reader=Reader(state="closed"); other=pr(H2,MERGED_AT); other.update(number=62); other["head"]["ref"]="other/branch"; reader.values["repos/owner/repo/issues/50/timeline"]=[cross_ref(62)]; reader.values["repos/owner/repo/pulls/62"]=other
+        observed=gh.observe_issue(config(),50,reader); self.assertIsNotNone(observed.unsafe_reason); self.assertIsNone(observed.pull_request)
     def test_close_api_failure_fails_closed(self):
         reader=Reader()
         def runner(cmd,payload,timeout): raise RuntimeError("close failed")
@@ -61,6 +64,10 @@ class IssueClosureTests(unittest.TestCase):
         reader=Reader(state="closed",graphql_data={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":61,"merged":True,"repository":{"nameWithOwner":"owner/repo"}}]}}}})
         reader.values["repos/owner/repo/issues/50/timeline"]=[]
         observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
+    def test_authoritative_closure_reads_later_graphql_page(self):
+        first={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}; second={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":62,"merged":True,"repository":{"nameWithOwner":"owner/repo"}}]}}}}
+        reader=Reader(state="closed",graphql_data=[first,second]); other=pr(H2,MERGED_AT); other.update(number=62); reader.values["repos/owner/repo/pulls/62"]=other; reader.values["repos/owner/repo/issues/50/timeline"]=[]; reader.values[f"repos/owner/repo/commits/{H2}/check-runs?filter=latest"]={"check_runs":[]}; reader.values[f"repos/owner/repo/commits/{H2}/status"]={"statuses":[]}; reader.values["repos/owner/repo/pulls/62/reviews"]=[]; reader.values["repos/owner/repo/issues/62/comments"]=[]
+        observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,62); self.assertTrue(observed.planner.merged)
     def test_timeline_fallback_when_closedby_zero_refs(self):
         reader=Reader(state="closed",graphql_data={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}})
         observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
