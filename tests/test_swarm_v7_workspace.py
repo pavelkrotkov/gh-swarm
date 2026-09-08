@@ -78,7 +78,7 @@ class DeterministicWorkspaceTests(GitFixture):
 class WorkerContractTests(unittest.TestCase):
     def test_worker_owns_commit_push_pr_and_exact_head_verification(self):
         body = kb.worker_body("owner/repo", 48, "swarm/test/48", "main", "1" * 40, "Implement the issue")
-        for phrase in ("Commit every intended change", "git status --porcelain", "git push -u origin HEAD:refs/heads/swarm/test/48", "Exactly one may exist", "non-draft", "full head SHA equals PUSHED_SHA exactly", "Do not merge"): self.assertIn(phrase, body)
+        for phrase in ("Commit every intended change", "git status --porcelain", "git push -u origin HEAD:refs/heads/swarm/test/48", "Exactly one may exist", "non-draft", "full head SHA equals PUSHED_SHA exactly", "limited to added/modified lines", "filter machine-readable findings to changed lines", "preserving file-level findings", "PEP 723", "Do not merge"): self.assertIn(phrase, body)
     def test_v7_controller_boundaries_do_not_build_normal_push_or_pr_create_commands(self):
         for candidate in SCRIPTS.glob("swarm_v7*.py"):
             text = candidate.read_text(); self.assertNotIn('["git", "push"', text); self.assertNotIn('["gh", "pr", "create"', text)
