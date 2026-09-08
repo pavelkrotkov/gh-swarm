@@ -120,12 +120,12 @@ def _select_pr(prs,branch=None):
     prs=_branch_prs(prs,branch); opened=[pr for pr in prs if str(pr.get("state") or "").lower()=="open"]
     if len(opened)>1: raise UnsafeGitHubObservation("multiple open PRs are linked to the issue")
     return next(iter(opened),max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None))
-def _merged_at(reader,repo,issue,branch=None): pr=_select_pr(_linked_prs(reader,repo,issue),branch); return str(pr.get("merged_at")) if pr and pr.get("merged_at") else None
-def _issue_branch(config,issue,state): return f"swarm/{config.swarm_id}/{issue}"
+def _merged_at(reader,repo,issue,branch=None): return max((str(pr["merged_at"]) for pr in _branch_prs(_linked_prs(reader,repo,issue),branch) if pr.get("merged_at")),default=None)
+def _swarm_branch(config,issue): return f"swarm/{config.swarm_id}/{issue}"
 def _dependency_observation(config,rows,reader):
     facts=[]
     for row in rows:
-        number=positive_int(row.get("number"),"blocker issue number"); state=str(row.get("state") or "").upper(); internal=number in config.issues; facts.append(BlockerObservation(number,state,internal,_merged_at(reader,config.repo,number,_issue_branch(config,number,state)) if internal else None))
+        number=positive_int(row.get("number"),"blocker issue number"); state=str(row.get("state") or "").upper(); internal=number in config.issues; facts.append(BlockerObservation(number,state,internal,_merged_at(reader,config.repo,number,None if state=="CLOSED" else _swarm_branch(config,number)) if internal else None))
     blocked=any(fact.merged_at is None if fact.internal else fact.state=="OPEN" for fact in facts); return tuple(facts),DependencyState.BLOCKED if blocked else DependencyState.READY
 def _merge_gate(config,pr):
     if pr.merged_at: return MergeGate.READY
@@ -140,7 +140,7 @@ def _with_pr(config,issue,state,blockers,dependency,pr,reader):
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
     planner=Observation(issue,merged,dependency,head,ci=ci_state(config,raw),review=review_state,adjudication_decision=decision,merge_gate=_merge_gate(config,observed),merge_confirmed=confirmed); return GitHubIssueObservation(issue,state,blockers,observed,planner)
 def _observe_issue(config,issue,reader):
-    row=mapping(reader.get(f"repos/{config.repo}/issues/{issue}"),"issue"); state=str(row.get("state") or "").upper(); blockers,dependency=_dependency_observation(config,reader.list(f"repos/{config.repo}/issues/{issue}/dependencies/blocked_by"),reader); pr=_select_pr(_linked_prs(reader,config.repo,issue),_issue_branch(config,issue,state))
+    row=mapping(reader.get(f"repos/{config.repo}/issues/{issue}"),"issue"); state=str(row.get("state") or "").upper(); blockers,dependency=_dependency_observation(config,reader.list(f"repos/{config.repo}/issues/{issue}/dependencies/blocked_by"),reader); pr=_select_pr(_linked_prs(reader,config.repo,issue),_swarm_branch(config,issue))
     if pr is not None: return _with_pr(config,issue,state,blockers,dependency,pr,reader)
     if state!="OPEN": raise UnsafeGitHubObservation("issue is not open and no merged PR is confirmed")
     return GitHubIssueObservation(issue,state,blockers,None,Observation(issue,dependency=dependency))
