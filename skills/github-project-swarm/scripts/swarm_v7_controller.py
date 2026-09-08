@@ -41,14 +41,13 @@ def _overlay(runtime,github,kanban,execution):
         return replace(github.planner,implementation=state)
     pr=github.pull_request; review,unsafe=_reviews(runtime,github,kanban,execution); adjudication,a_bad=(ExecutionState.IDLE,None) if github.planner.adjudication_decision in {AdjudicationDecision.ACCEPT,AdjudicationDecision.REVISE} else _slot(runtime,semantic_key(runtime.config.swarm_id,github.issue_number,"adjudication",head=pr.head),kanban,execution); revision,r_bad=_slot(runtime,semantic_key(runtime.config.swarm_id,github.issue_number,"revision",head=pr.head),kanban,execution); return replace(github.planner,review=review,adjudication=adjudication,revision=revision,unsafe_reason=unsafe or a_bad or r_bad or github.planner.unsafe_reason)
 def _base_current(runtime,github,workspace):
-    pr=github.pull_request
-    if pr is None or github.planner.dependency is not DependencyState.READY: return True
+    if (pr:=github.pull_request) is None or github.planner.dependency is not DependencyState.READY: return True
     workspace.validate_binding(runtime.config.repo); default=workspace.refresh(runtime.config.default_branch,branch_name(runtime.config.swarm_id,github.issue_number))[0]; return workspace.ancestor(default,pr.head)
 def observe_issue(runtime,issue_number,*,reader=None,kanban=None,workspace=None):
-    github=observe_github(runtime.config,issue_number,reader if reader is not None else GhReader())
+    github=observe_github(runtime.config,issue_number,_default(reader,GhReader))
     if github.unsafe_reason or getattr(github.pull_request,"merged_at",None): return IssueObservation(github,github.planner,{})
-    execution={}; actual_workspace=workspace if workspace is not None else GitWorkspace(runtime.repo_path)
-    try: planner=_overlay(runtime,github,kanban if kanban is not None else KanbanAdapter(runtime.board,runtime.repo_path),execution); planner=replace(planner,base_current=_base_current(runtime,github,actual_workspace))
+    execution={}; actual_workspace=_default(workspace,lambda:GitWorkspace(runtime.repo_path))
+    try: planner=_overlay(runtime,github,_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),execution); planner=replace(planner,base_current=_base_current(runtime,github,actual_workspace))
     except Exception as exc: planner=replace(github.planner,unsafe_reason=f"execution observation failed: {exc}")
     return IssueObservation(github,planner,execution)
 def plan_once(runtime,issue_number,*,reader=None,kanban=None,workspace=None,planner=plan_issue):
