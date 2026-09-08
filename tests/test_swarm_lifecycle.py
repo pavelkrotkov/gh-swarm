@@ -51,8 +51,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(result.outcome,"active"); self.assertEqual(waiting,(ExecutionState.RUNNING,None)); self.assertEqual(running,(ExecutionState.RUNNING,None))
     def test_active_task_without_worker_run_fails_closed_after_grace(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-1","attempt":1,"created_at":1000}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1")
-        with patch("swarm_v7_controller.time.time",return_value=1300): state,reason=_slot(rt,key,adapter,{})
-        self.assertEqual(state,ExecutionState.FAILED); self.assertIn("no worker run",reason)
+        with patch("swarm_v7_controller.time.time",side_effect=(1300,900)): expired=_slot(rt,key,adapter,{}); backward=_slot(rt,key,adapter,{})
+        self.assertEqual(expired[0],ExecutionState.FAILED); self.assertEqual(backward[0],ExecutionState.FAILED); self.assertIn("no worker run",expired[1])
     def test_review_tasks_get_the_same_startup_grace(self):
         rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
         with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
