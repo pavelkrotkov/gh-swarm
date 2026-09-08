@@ -33,6 +33,12 @@ class GhReaderTests(unittest.TestCase):
         self.assertNotIn("DELETE", cmd)
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
 
+    def test_graphql_uses_native_bounded_pagination(self):
+        payload=json.dumps([{"data":{"ok":1}},{"data":{"ok":2}}])
+        with patch.object(process.subprocess,"run",return_value=Result(payload)) as run:
+            self.assertEqual(github.GhReader(timeout_s=7).graphql("query($endCursor:String){x}"),[{"ok":1},{"ok":2}])
+        cmd=run.call_args.args[0]; self.assertIn("--paginate",cmd); self.assertIn("--slurp",cmd); self.assertEqual(run.call_args.kwargs["timeout"],7)
+
     def test_timeout_and_invalid_json_fail_closed(self):
         with patch.object(process.subprocess, "run", side_effect=subprocess.TimeoutExpired(["gh"], 3)):
             with self.assertRaisesRegex(github.GitHubReadError, "timed out after 3s"):
