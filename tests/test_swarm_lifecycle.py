@@ -7,7 +7,7 @@ if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli
 import swarm_v7_cli_process as process
 from swarm_v7 import Action, AdjudicationDecision, CiState, ExecutionState, ManifestV7, Observation, Phase, Plan, ReviewState, plan_issue
-from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, dispatch_attempts
+from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, apply_plan, dispatch_attempts
 from swarm_v7_github import GitHubIssueObservation
 from swarm_v7_kanban import Outcome, semantic_key
 LEGACY=("lifecycle.py","observability.py","swarm.py","swarm_v6.py","swarm_legacy.py")
@@ -26,7 +26,7 @@ class LifecycleTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"fresh v7"): cli.load(path)
     def test_schema_seven_rejects_hidden_state(self):
         data=runtime(issues=(1,)).to_dict()
-        for field in ("state","finished","acceptance","review","round"):
+        for field in ("state","finished","acceptance","review","round","repairs"):
             with self.assertRaisesRegex(ValueError,"legacy/unknown fields"): RuntimeManifest.from_dict(data|{field:"stale"})
     def test_manifest_save_is_atomic_and_fsynced(self):
         rt=runtime(issues=(1,))
@@ -70,8 +70,11 @@ class LifecycleTests(unittest.TestCase):
         plan=plan_issue(_overlay(rt,github,adapter,{}),rt.config); self.assertEqual((plan.phase,plan.action),(Phase.READY_TO_MERGE,Action.MERGE))
     def test_remote_exact_head_ci_failure_beats_done_worker_task(self): rt=runtime(issues=(1,)); head="2"*40; rt.cursors[semantic_key(rt.config.swarm_id,1,"implementation")]={"task_id":"task-4","attempt":1}; github=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=head,reviewers=()),planner=Observation(1,pr_head=head,ci=CiState.FAILED)); adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.SUCCESS,status="done",has_run=True,task_id="task-4"); self.assertEqual(plan_issue(_overlay(rt,github,adapter,{}),rt.config).action,Action.START_REVISION); adapter.observe.assert_not_called()
     def test_worker_task_uses_supported_first_failure_retry(self):
-        rt=runtime(issues=(1,)); adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.prepare.return_value="1"*40; reader=Mock(); reader.get.return_value={"body":"work"}; item=planned(); ctx=ExecutionContext(rt,item.observation,reader,adapter,workspace,Mock())
-        _worker(ctx,item.plan,False); spec=adapter.create.call_args.args[0]; self.assertEqual(spec.max_retries,1); self.assertEqual(spec.assignee,"sat-swarm"); self.assertIn("all required checks for PUSHED_SHA have completed successfully",spec.body); self.assertIn("prior-head, base-branch, merge-candidate, sibling-PR, and local results do not count",spec.body); self.assertIn("104595",spec.body)
+        rt=runtime(issues=(1,)); adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.prepare.return_value="1"*40; workspace.ancestor.return_value=False; reader=Mock(); reader.get.return_value={"body":"work"}; item=planned(); ctx=ExecutionContext(rt,item.observation,reader,adapter,workspace,Mock())
+        _worker(ctx,item.plan,False); spec=adapter.create.call_args.args[0]; self.assertEqual(spec.max_retries,1); self.assertEqual(spec.assignee,"sat-swarm"); self.assertIn("Prepared base SHA: "+"1"*40,spec.body); self.assertIn("merge exact prepared base "+"1"*40,spec.body); self.assertIn("resolve conflicts",spec.body); self.assertIn("all required checks for PUSHED_SHA have completed successfully",spec.body); self.assertIn("prior-head, base-branch, merge-candidate, sibling-PR, and local results do not count",spec.body); self.assertIn("104595",spec.body)
+    def test_stale_pr_dispatches_recovery_before_review_and_new_head_reenters_ci(self):
+        rt=runtime(issues=(1,)); old,base,new="2"*40,"3"*40,"4"*40; obs=Observation(1,pr_head=old,ci=CiState.PASSED); gh=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=old)); item=PlannedIssue(IssueObservation(gh,obs,{}),Plan(Phase.NEEDS_REVIEW,Action.START_REVIEW,"review",old,"review-key")); adapter=Mock(); adapter.create.return_value="task-refresh"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.refresh.return_value=(base,None,old); workspace.prepare.return_value=base; workspace.ancestor.side_effect=(False,False); reader=Mock(); reader.get.return_value={"body":"work"}; review=Mock()
+        result=apply_plan(rt,item,reader=reader,kanban=adapter,workspace=workspace,executors={Action.START_REVIEW:review}); self.assertEqual(result.outcome,"active"); review.assert_not_called(); self.assertIn("resolve conflicts",adapter.create.call_args.args[0].body); refreshed=plan_issue(Observation(1,pr_head=new,ci=CiState.PENDING),rt.config); self.assertEqual((refreshed.phase,refreshed.action),(Phase.WAITING_CI,None))
     def test_invalid_zero_attempt_bound_fails_before_dispatch(self):
         rt=runtime(issues=(1,)); rt.max_attempts=0; adapter=Mock()
         with self.assertRaisesRegex(ValueError,"max_execution_attempts must be positive"): dispatch_attempts(rt,adapter,"issue:1:implementation",Mock())
