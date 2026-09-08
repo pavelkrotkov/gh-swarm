@@ -49,15 +49,21 @@ class DeterministicWorkspaceTests(GitFixture):
         bad = ws.WorkspaceSpec("owner/not-this-repo", "main", self.branch, self.worktree)
         with self.assertRaisesRegex(ws.WorkspaceError, "does not match configured repo"): self.git.prepare(bad, started=False)
         self.assertNotEqual(0, subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{self.branch}"], cwd=self.repo).returncode); self.assertFalse(self.worktree.exists())
-    def test_fresh_identity_fails_closed_on_branch_pr_and_worktree_collisions(self):
+    def test_fresh_identity_reclaims_orphan_local_branch_and_converges(self):
+        orphan=self._git("rev-parse","HEAD",cwd=self.repo); self._git("branch",self.branch,cwd=self.repo); expected=self.advance_main("fresh"); base=self.git.prepare(self.spec,started=False)
+        self.assertEqual(expected,base); self.assertNotEqual(orphan,self._git("rev-parse",self.branch,cwd=self.repo)); self.assertEqual(expected,self._git("rev-parse","HEAD",cwd=self.worktree)); self.assertEqual(expected,self.git.prepare(self.spec,started=False))
+    def test_fresh_identity_preserves_prepared_marker(self):
+        base=self.git.prepare(self.spec,started=False); self._git("worktree","remove","--force",str(self.worktree),cwd=self.repo); self.assertFalse(self.worktree.exists()); self.assertEqual(base,self.git.prepare(self.spec,started=False)); self.assertTrue(self.worktree.exists())
+    def test_fresh_identity_fails_closed_on_pr_remote_and_active_worktree(self):
         with self.subTest("PR"):
-            with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec, started=False, pr_exists=True)
-        self._git("branch", self.branch, cwd=self.repo)
-        with self.subTest("branch"):
-            with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec, started=False)
-        self._git("branch", "-D", self.branch, cwd=self.repo); self.worktree.mkdir(parents=True)
-        with self.subTest("worktree"):
-            with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec, started=False)
+            with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec,started=False,pr_exists=True)
+        self._git("branch",self.branch,cwd=self.repo); self._git("push","origin",f"{self.branch}:refs/heads/{self.branch}",cwd=self.repo)
+        with self.subTest("remote"):
+            with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec,started=False)
+        self._git("push","origin","--delete",self.branch,cwd=self.repo); self._git("branch","-D",self.branch,cwd=self.repo); active=self.root/"active"; self._git("worktree","add","-b",self.branch,str(active),"main",cwd=self.repo)
+        with self.subTest("active worktree"):
+            with self.assertRaises(ws.WorkspaceError): self.git.prepare(self.spec,started=False)
+        self.assertEqual(self.branch,self._git("branch","--show-current",cwd=active)); self.assertEqual(self._git("rev-parse","main",cwd=self.repo),self._git("rev-parse",self.branch,cwd=self.repo))
     def test_crash_after_commit_before_push_preserves_local_candidate_for_retry(self):
         base = self.git.prepare(self.spec, started=False); (self.worktree / "change.txt").write_text("candidate\n"); self._git("add", ".", cwd=self.worktree); self._git("commit", "-m", "candidate", cwd=self.worktree); candidate = self._git("rev-parse", "HEAD", cwd=self.worktree)
         self.assertIsNone(self.remote_branch()); self.assertEqual(base, self.git.prepare(self.spec, started=True)); self.assertEqual(candidate, self._git("rev-parse", self.branch, cwd=self.repo)); self.assertIsNone(self.remote_branch())
