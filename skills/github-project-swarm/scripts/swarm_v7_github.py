@@ -121,7 +121,7 @@ def _select_pr(prs,branch=None):
     if len(opened)>1: raise UnsafeGitHubObservation("multiple open PRs are linked to the issue")
     return next(iter(opened),max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None))
 def _merged_at(reader,repo,issue,branch=None): pr=_select_pr(_linked_prs(reader,repo,issue),branch); return str(pr.get("merged_at")) if pr and pr.get("merged_at") else None
-def _issue_branch(config,issue,state): return None if state=="CLOSED" else f"swarm/{config.swarm_id}/{issue}"
+def _issue_branch(config,issue,state): return f"swarm/{config.swarm_id}/{issue}"
 def _dependency_observation(config,rows,reader):
     facts=[]
     for row in rows:
