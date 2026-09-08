@@ -8,8 +8,9 @@ from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7,
 from swarm_v7_cli_process import run_command
 class GitHubReadError(RuntimeError): pass
 class UnsafeGitHubObservation(RuntimeError): pass
+class AdjudicationExecutionError(UnsafeGitHubObservation): pass
 BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
-_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]+) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
+_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
 def exact_sha(value):
     if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
     return value
@@ -67,11 +68,11 @@ def review_publications(config,issue,head,rows):
     pubs=tuple(found[slot] for slot in sorted(found)); state=ReviewState.NONE if not pubs else ReviewState.DISPUTED if len(pubs)==len(config.reviewer_models) else ReviewState.RUNNING; return pubs,state
 def payload(body,head):
     matches=_DECISION.findall(body)
-    if len(matches)!=1: raise UnsafeGitHubObservation("adjudication requires exactly one machine-readable decision payload")
-    try: value=json.loads(base64.urlsafe_b64decode(matches[0].encode()).decode())
-    except Exception as exc: raise UnsafeGitHubObservation("invalid adjudication decision payload") from exc
-    if not isinstance(value,dict): raise UnsafeGitHubObservation("invalid adjudication decision payload")
-    if exact_sha(str(value.get("head_sha") or ""))!=head: raise UnsafeGitHubObservation("adjudication payload head does not match current PR head")
+    if len(matches)!=1: raise AdjudicationExecutionError("adjudication requires exactly one machine-readable decision payload")
+    try: value=json.loads(base64.b64decode(matches[0].encode(),altchars=b"-_",validate=True).decode())
+    except Exception as exc: raise AdjudicationExecutionError("invalid adjudication decision payload") from exc
+    if not isinstance(value,dict): raise AdjudicationExecutionError("invalid adjudication decision payload")
+    if not _SHA.fullmatch(payload_head:=str(value.get("head_sha") or "")) or payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
     return value
 def adjudication_publication(config,issue,head,rows):
     current=[]; prefix=f"<!-- hermes-swarm-adjudication:{config.swarm_id}:{issue}:"
@@ -82,8 +83,11 @@ def adjudication_publication(config,issue,head,rows):
     if not current: return None,AdjudicationDecision.NONE
     if len(current)!=1: raise UnsafeGitHubObservation(f"duplicate adjudication publications for head {head}")
     data=payload(str(current[0].get("body")),head); raw=str(data.get("decision")).lower(); decision={"accept":AdjudicationDecision.ACCEPT,"changes":AdjudicationDecision.REVISE,"revise":AdjudicationDecision.REVISE}.get(raw)
-    if decision is None: raise UnsafeGitHubObservation("invalid adjudication decision")
+    if decision is None: raise AdjudicationExecutionError("invalid adjudication decision")
     return AdjudicationPublication(head,data),decision
+def _recover_adjudication(config,issue,head,rows):
+    try: return adjudication_publication(config,issue,head,rows)
+    except AdjudicationExecutionError: return None,AdjudicationDecision.NONE
 def _rows(value):
     if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise GitHubReadError("check/status rows are not object lists")
     return value
@@ -136,7 +140,7 @@ def _merge_gate(config,pr):
 def _pr_observation(pr,number,head,reviewers,adjudication):
     return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
 def _with_pr(config,issue,state,blockers,dependency,pr,reader):
-    head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=adjudication_publication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
+    head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=_recover_adjudication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
     planner=Observation(issue,merged,dependency,head,ci=ci_state(config,raw),review=review_state,adjudication_decision=decision,merge_gate=_merge_gate(config,observed),merge_confirmed=confirmed); return GitHubIssueObservation(issue,state,blockers,observed,planner)
 def _observe_issue(config,issue,reader):

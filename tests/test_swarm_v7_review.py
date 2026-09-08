@@ -67,6 +67,9 @@ class AdjudicationSlotTests(unittest.TestCase):
     def test_valid_adjudication_satisfies_slot_even_if_task_failed(self):
         adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "adjudication", head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.create(rx.adjudicator_task_spec(config(), target()), key); before = dict(adapter.by_key); result = rx.reconcile_adjudication(config(), target(), (review(1), review(2)), (adjudication(),), adapter)
         self.assertEqual(result.state, rx.SlotState.SATISFIED); self.assertEqual(adapter.by_key, before)
+    def test_success_without_valid_adjudication_uses_next_bounded_attempt(self):
+        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "adjudication", head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); adapter.set_outcome(f"{key}:a2", kb.Outcome.ACTIVE); result = rx.reconcile_adjudication(config(), target(), (review(1), review(2)), (), adapter)
+        self.assertEqual(result.state,rx.SlotState.ACTIVE); self.assertEqual(result.attempt,2); self.assertIn(f"{key}:a2",adapter.by_key)
     def test_duplicate_current_head_adjudication_fails_closed(self):
         with self.assertRaisesRegex(rx.ReviewExecutionError, "duplicate adjudication"): rx.reconcile_adjudication(config(), target(), (review(1), review(2)), (adjudication(), adjudication()), FakeAdapter())
 
