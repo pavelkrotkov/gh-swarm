@@ -23,9 +23,7 @@ class GhMerger:
         if not isinstance(response,dict): raise MergeRequestError("GitHub merge API response is not an object")
         if response.get("merged") is not True: raise MergeRequestError(str(response.get("message") or "GitHub did not merge the exact head"))
         return response
-    def close_issue(self,repo,number):
-        try: return json.loads(self.runner(["gh","api","--method","PATCH","-H","Accept: application/vnd.github+json",f"repos/{repo}/issues/{number}","--input","-"],'{"state":"closed"}',self.timeout_s))
-        except (json.JSONDecodeError,RuntimeError) as exc: raise MergeRequestError(str(exc)) from exc
+    def close_issue(self,repo,number): return self.runner(["gh","api","--method","PATCH","-H","Accept: application/vnd.github+json",f"repos/{repo}/issues/{number}","--input","-"],'{"state":"closed"}',self.timeout_s)
 def _objects(value,name):
     if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise ValueError(f"adjudication {name} must be a JSON array of objects")
     return value
@@ -33,9 +31,7 @@ def _finding_id(markers,head,row):
     body=str(row.get("body") or ""); matched=[marker for marker in markers if marker in body]
     if not matched: return None
     if len(matched)!=1 or body.count(matched[0])!=1: raise ValueError("review finding has ambiguous exact-head publication marker")
-    try: native_head(row,head)
-    except UnsafeGitHubObservation as exc: raise ValueError("native GitHub finding commit_id differs from current PR head") from exc
-    return positive_int(row.get("id"),"review finding comment id")
+    native_head(row,head); return positive_int(row.get("id"),"review finding comment id")
 def _findings(config,issue,head,rows):
     markers=tuple(review_marker(config.swarm_id,issue,slot,head) for slot in range(1,len(config.reviewer_models)+1)); values=[value for row in rows if (value:=_finding_id(markers,head,row)) is not None]
     if len(values)!=len(set(values)): raise ValueError(f"duplicate review finding comment id {next(value for value in values if values.count(value)>1)}")
@@ -45,16 +41,14 @@ def _dispositions(data):
     for row in _objects(data.get("comment_dispositions"),"comment_dispositions"):
         ident=positive_int(row.get("github_comment_id"),"disposition github_comment_id"); kind=str(row.get("disposition") or "").lower()
         if ident in seen or kind not in {"fix","accepted-risk","reject"}: raise ValueError(f"invalid or duplicate disposition for finding {ident}")
-        seen.add(ident)
-        if kind=="fix": fixes.add(ident)
+        seen.add(ident); fixes.add(ident) if kind=="fix" else None
     return seen,fixes
 def _required(data):
     sources=[]
     for row in _objects(data.get("required_changes"),"required_changes"):
-        values=row.get("source_comment_ids")
-        if not isinstance(values,list) or not values: raise ValueError("required change must cite one or more finding comments")
+        if not isinstance(values:=row.get("source_comment_ids"),list) or not values: raise ValueError("required change must cite one or more finding comments")
         sources.extend(positive_int(value,"required-change source comment id") for value in values)
-    if len(sources)!=len(set(sources)): raise ValueError(f"duplicate required-change source {next(value for value in sources if sources.count(value)>1)}")
+    if len(sources)!=len(set(sources)): raise ValueError("duplicate required-change source")
     return set(sources)
 def adjudication_ledger_error(config,issue,pr,reader):
     try:
@@ -80,6 +74,5 @@ def _close_source_issue(config,github,reader,writer):
 def request_exact_head_merge(config,issue_number,expected_head,reader=None,merger=None):
     head=exact_sha(str(expected_head).strip().lower()); actual_reader=reader if reader is not None else GhReader(); actual_merger=merger if merger is not None else GhMerger(); github=observe_issue(config,issue_number,actual_reader); pr=github.pull_request; confirmed=_confirmed(pr,head)
     if confirmed is not None: _close_source_issue(config,github,actual_reader,actual_merger); return confirmed
-    ledger=None if github.unsafe_reason else adjudication_ledger_error(config,issue_number,pr,actual_reader)
-    if blockers:=_blockers(config,github,pr,head,ledger): raise MergeAuthorityError("; ".join(blockers))
+    if blockers:=_blockers(config,github,pr,head,None if github.unsafe_reason else adjudication_ledger_error(config,issue_number,pr,actual_reader)): raise MergeAuthorityError("; ".join(blockers))
     actual_merger.merge(config.repo,pr.number,head); return MergeResult(MergeResultState.REQUESTED,pr.number,head)
