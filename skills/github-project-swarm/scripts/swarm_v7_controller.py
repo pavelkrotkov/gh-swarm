@@ -4,10 +4,9 @@
 # approval, merge completion, dependency release, or other semantic workflow state.
 from collections import namedtuple; from dataclasses import dataclass, replace
 from pathlib import Path; import time
-from swarm_v7 import Action, AdjudicationDecision, ExecutionState, ManifestV7, ReviewState, plan_issue
+from swarm_v7 import Action, AdjudicationDecision, ExecutionState, ManifestV7, ReviewState, plan_issue; from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 from swarm_v7_github import GhReader, observe_issue as observe_github; from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
 from swarm_v7_merge import GhMerger, request_exact_head_merge; from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
-from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 _CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
 def _need(ok,message):
     if not ok: raise ValueError(message)
@@ -79,10 +78,11 @@ def _merge_action(ctx,plan):
     result=request_exact_head_merge(ctx.runtime.config,ctx.observed.github.issue_number,plan.pr_head or "",ctx.reader,ctx.merger); return ActionResult(result.state.value.lower(),detail=result.reason)
 def _handlers(): return {Action.START_IMPLEMENTATION:lambda c,p:_worker(c,p,False),Action.START_REVISION:lambda c,p:_worker(c,p,True),Action.START_REVIEW:lambda c,p:_start_review(c,False),Action.START_ADJUDICATION:lambda c,p:_start_review(c,True),Action.MERGE:_merge_action}
 def _default(value,factory): return factory() if value is None else value
+def _stale_pr(ctx): pr=ctx.observed.github.pull_request; return pr is not None and not getattr(pr,"merged_at",None) and not ctx.runtime.config.paused and not ctx.observed.planner.unsafe_reason and not ctx.workspace.ancestor(ctx.workspace.refresh(ctx.runtime.config.default_branch,branch_name(ctx.runtime.config.swarm_id,ctx.observed.github.issue_number))[0],pr.head)
 def apply_plan(runtime,planned,*,reader=None,kanban=None,workspace=None,merger=None,executors=None):
+    ctx=ExecutionContext(runtime,planned.observation,_default(reader,GhReader),_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),_default(workspace,lambda:GitWorkspace(runtime.repo_path)),_default(merger,GhMerger))
+    if _stale_pr(ctx): return _worker(ctx,planned.plan,True)
     if planned.plan.action is None: return ActionResult("suppressed" if planned.plan.would_action else "noop",detail=_need(not planned.observation.planner.unsafe_reason,planned.observation.planner.unsafe_reason) or planned.plan.reason)
     handler=_default(executors,_handlers).get(planned.plan.action)
     if handler is None: raise RuntimeError(f"no executor registered for planned action {planned.plan.action.value}")
-    ctx=ExecutionContext(runtime,planned.observation,_default(reader,GhReader),_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),_default(workspace,lambda:GitWorkspace(runtime.repo_path)),_default(merger,GhMerger)); pr=ctx.observed.github.pull_request; default=ctx.workspace.refresh(ctx.runtime.config.default_branch,branch_name(ctx.runtime.config.swarm_id,ctx.observed.github.issue_number))[0] if pr is not None and planned.plan.action is not Action.START_REVISION else None
-    if default is not None and not ctx.workspace.ancestor(default,pr.head): return _worker(ctx,planned.plan,True)
     return handler(ctx,planned.plan)
