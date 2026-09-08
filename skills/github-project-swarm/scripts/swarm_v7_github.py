@@ -8,9 +8,9 @@ from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7,
 from swarm_v7_cli_process import run_command
 class GitHubReadError(RuntimeError): pass
 class UnsafeGitHubObservation(RuntimeError): pass
-class AdjudicationExecutionError(RuntimeError): pass
+class AdjudicationExecutionError(UnsafeGitHubObservation): pass
 BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
-_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]+) -->"); _DECISION_B64_BOUNDS=(32,1_048_576); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
+_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
 def exact_sha(value):
     if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
     return value
@@ -69,14 +69,10 @@ def review_publications(config,issue,head,rows):
 def payload(body,head):
     matches=_DECISION.findall(body)
     if len(matches)!=1: raise AdjudicationExecutionError("adjudication requires exactly one machine-readable decision payload")
-    token=matches[0]
-    if not _DECISION_B64_BOUNDS[0]<=len(token)<=_DECISION_B64_BOUNDS[1]: raise AdjudicationExecutionError("adjudication decision payload size is implausible")
-    try: value=json.loads(base64.b64decode(token.encode(),altchars=b"-_",validate=True).decode())
+    try: value=json.loads(base64.b64decode(matches[0].encode(),altchars=b"-_",validate=True).decode())
     except Exception as exc: raise AdjudicationExecutionError("invalid adjudication decision payload") from exc
     if not isinstance(value,dict): raise AdjudicationExecutionError("invalid adjudication decision payload")
-    try: payload_head=exact_sha(str(value.get("head_sha") or ""))
-    except ValueError as exc: raise AdjudicationExecutionError("invalid adjudication payload head") from exc
-    if payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
+    if not _SHA.fullmatch(payload_head:=str(value.get("head_sha") or "")) or payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
     return value
 def adjudication_publication(config,issue,head,rows):
     current=[]; prefix=f"<!-- hermes-swarm-adjudication:{config.swarm_id}:{issue}:"
