@@ -111,7 +111,7 @@ def reconcile_runtime(runtime):
         started=time.monotonic(); planned=result=error=None
         try:
             planned=plan_once(runtime,issue); result=apply_plan(runtime,planned)
-            if planned.plan.action is not None: save(runtime)
+            if planned.plan.action is not None or result.task_ids: save(runtime)
         except Exception as exc: error=f"{runtime.config.swarm_id} #{issue}: {exc}"; errors.append(error)
         journal(runtime,issue,planned,result,int((time.monotonic()-started)*1000),error)
     return errors
