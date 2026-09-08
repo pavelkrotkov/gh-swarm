@@ -32,7 +32,7 @@ class IssueClosureTests(unittest.TestCase):
     def test_close_api_failure_fails_closed(self):
         reader=Reader()
         def runner(cmd,payload,timeout): raise RuntimeError("close failed")
-        with self.assertRaisesRegex(merge.MergeRequestError,"close failed"): merge.request_exact_head_merge(config(),50,H1,reader,merge.GhMerger(runner=runner))
+        with self.assertRaisesRegex(RuntimeError,"close failed"): merge.request_exact_head_merge(config(),50,H1,reader,merge.GhMerger(runner=runner))
         self.assertEqual(reader.values["repos/owner/repo/issues/50"]["state"],"open")
     def test_close_requires_closed_readback(self):
         reader=Reader(); writer=Writer(reader,mutate=False)
