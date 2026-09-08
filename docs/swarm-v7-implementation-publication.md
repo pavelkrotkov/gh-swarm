@@ -6,7 +6,7 @@ Issue #48 moves durable implementation publication from the controller to the im
 
 For a fresh implementation slot, the controller must first validate the configured repository/path binding, fetch the configured default branch, resolve the exact full `origin/<default>` SHA, and prove every GitHub-confirmed internal predecessor merge commit is an ancestor of that fetched default. It then creates the deterministic `swarm/<swarm>/<issue>` branch from exactly that SHA and attaches the deterministic worktree.
 
-A fresh semantic identity fails closed if its expected branch, worktree, or branch PR already exists. Once the implementation slot has legitimately started, those artifacts become recovery evidence: an existing local branch can preserve a commit made before a crash, a remote branch can reconstruct a missing worktree, and a matching durable PR can satisfy the publication handoff even if the worker card dies afterward.
+A fresh semantic identity may reclaim only a local-only orphan branch when no expected worktree, prepared marker, matching PR, remote branch, or started execution exists; Git itself must also permit deletion. Every durable or active collision still fails closed. Once the implementation slot has legitimately started, those artifacts become recovery evidence: an existing local branch can preserve a commit made before a crash, a remote branch can reconstruct a missing worktree, and a matching durable PR can satisfy the publication handoff even if the worker card dies afterward.
 
 New issues are never based on another unmerged swarm branch. Dependencies are GitHub merge gates; each new branch starts only from a freshly fetched default branch after predecessor `mergedAt`/merge-commit facts are confirmed.
 
