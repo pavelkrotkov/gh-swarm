@@ -7,7 +7,7 @@ from enum import Enum
 import json
 from swarm_v7 import AdjudicationDecision, CiState, ReviewState
 from swarm_v7_cli_process import run_command
-from swarm_v7_github import GhReader, UnsafeGitHubObservation, adjudication_publication, exact_sha, native_head, observe_issue, positive_int, review_marker
+from swarm_v7_github import GhReader, UnsafeGitHubObservation, adjudication_publication, exact_sha, mapping, native_head, observe_issue, positive_int, review_marker
 class MergeAuthorityError(RuntimeError): pass
 class MergeRequestError(RuntimeError): pass
 MergeResultState=Enum("MergeResultState",{x:x for x in "REQUESTED GITHUB_CONFIRMED".split()},type=str); MergeResult=namedtuple("MergeResultBase","state pr_number head merged_at",defaults=(None,)); MergeResult.reason=property(lambda r:f"GitHub confirmed exact head {r.head} merged at {r.merged_at} and source issue closed" if r.state is MergeResultState.GITHUB_CONFIRMED else f"exact-head merge requested for {r.head}")
@@ -15,18 +15,17 @@ class GhMerger:
     def __init__(self,timeout_s=30.0,runner=None):
         if timeout_s<=0: raise ValueError("timeout_s must be positive")
         self.timeout_s=timeout_s; self.runner=runner if runner is not None else (lambda cmd,payload,timeout:run_command(cmd,timeout=timeout,input_text=payload))
-    def _request(self,method,endpoint,payload,kind):
-        cmd=["gh","api","--method",method,"-H","Accept: application/vnd.github+json",endpoint,"--input","-"]
-        try: response=json.loads(self.runner(cmd,json.dumps(payload,separators=(",",":")),self.timeout_s))
-        except json.JSONDecodeError as exc: raise MergeRequestError(f"GitHub {kind} API returned invalid JSON") from exc
-        except RuntimeError as exc: raise MergeRequestError(str(exc)) from exc
-        if not isinstance(response,dict): raise MergeRequestError(f"GitHub {kind} API response is not an object")
-        return response
     def merge(self,repo,number,head):
-        head=exact_sha(str(head).strip().lower()); response=self._request("PUT",f"repos/{repo}/pulls/{number}/merge",{"sha":head},"merge")
+        head=exact_sha(str(head).strip().lower()); cmd=["gh","api","--method","PUT","-H","Accept: application/vnd.github+json",f"repos/{repo}/pulls/{number}/merge","--input","-"]
+        try: response=json.loads(self.runner(cmd,json.dumps({"sha":head},separators=(",",":")),self.timeout_s))
+        except json.JSONDecodeError as exc: raise MergeRequestError("GitHub merge API returned invalid JSON") from exc
+        except RuntimeError as exc: raise MergeRequestError(str(exc)) from exc
+        if not isinstance(response,dict): raise MergeRequestError("GitHub merge API response is not an object")
         if response.get("merged") is not True: raise MergeRequestError(str(response.get("message") or "GitHub did not merge the exact head"))
         return response
-    def close_issue(self,repo,number): return self._request("PATCH",f"repos/{repo}/issues/{number}",{"state":"closed"},"issue")
+    def close_issue(self,repo,number):
+        try: return json.loads(self.runner(["gh","api","--method","PATCH","-H","Accept: application/vnd.github+json",f"repos/{repo}/issues/{number}","--input","-"],'{"state":"closed"}',self.timeout_s))
+        except (json.JSONDecodeError,RuntimeError) as exc: raise MergeRequestError(str(exc)) from exc
 def _objects(value,name):
     if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise ValueError(f"adjudication {name} must be a JSON array of objects")
     return value
@@ -69,19 +68,18 @@ def adjudication_ledger_error(config,issue,pr,reader):
 def _reason(ok,message): return None if ok else message
 def _blockers(config,github,pr,head,ledger):
     expected=CiState.PASSED if config.ci_required else CiState.NOT_APPLICABLE; held=set(pr.labels)&{x.lower() for x in config.no_merge_labels}; gates=(github.unsafe_reason,_reason(github.issue_number in config.issues,"issue is not configured for this swarm"),_reason(pr.state=="OPEN" and not pr.draft,"pull request is not open and non-draft"),_reason(pr.base==config.default_branch,"pull request targets the wrong base branch"),_reason(pr.head==head,"current GitHub PR head differs from the exact head being considered"),_reason(github.planner.review is ReviewState.DISPUTED,"current exact head does not have every configured reviewer slot"),ledger,_reason(github.planner.adjudication_decision is AdjudicationDecision.ACCEPT,"current exact-head adjudication is not ACCEPT"),_reason(github.planner.ci is expected,"CI policy is not satisfied for the exact head"),_reason(pr.mergeable is True and pr.merge_state in {"CLEAN","UNSTABLE"},"GitHub merge state is incompatible with automatic merge"),_reason(not held,"no-merge label applies"),_reason(not config.paused,"swarm is paused")); return [reason for reason in gates if reason]
-def _confirmed(config,github,head,reader,writer):
-    pr=github.pull_request
+def _confirmed(pr,head):
     if pr is None: raise MergeAuthorityError("fresh GitHub observation has no pull request")
     if not pr.merged_at: return None
     if pr.head!=head: raise MergeAuthorityError("GitHub-confirmed merged PR head differs from requested head")
+    return MergeResult(MergeResultState.GITHUB_CONFIRMED,pr.number,pr.head,pr.merged_at)
+def _close_source_issue(config,github,reader,writer):
     if github.issue_number not in config.issues: raise MergeAuthorityError("issue is not configured for this swarm")
     if github.issue_state!="CLOSED": writer.close_issue(config.repo,github.issue_number)
-    row=reader.get(f"repos/{config.repo}/issues/{github.issue_number}")
-    if not isinstance(row,dict) or str(row.get("state") or "").upper()!="CLOSED": raise MergeAuthorityError("GitHub source issue is not CLOSED after confirmed merge")
-    return MergeResult(MergeResultState.GITHUB_CONFIRMED,pr.number,pr.head,pr.merged_at)
+    if str(mapping(reader.get(f"repos/{config.repo}/issues/{github.issue_number}"),"issue").get("state") or "").upper()!="CLOSED": raise MergeAuthorityError("GitHub source issue is not CLOSED after confirmed merge")
 def request_exact_head_merge(config,issue_number,expected_head,reader=None,merger=None):
-    head=exact_sha(str(expected_head).strip().lower()); actual_reader=reader if reader is not None else GhReader(); actual_merger=merger if merger is not None else GhMerger(); github=observe_issue(config,issue_number,actual_reader); pr=github.pull_request; confirmed=_confirmed(config,github,head,actual_reader,actual_merger)
-    if confirmed is not None: return confirmed
+    head=exact_sha(str(expected_head).strip().lower()); actual_reader=reader if reader is not None else GhReader(); actual_merger=merger if merger is not None else GhMerger(); github=observe_issue(config,issue_number,actual_reader); pr=github.pull_request; confirmed=_confirmed(pr,head)
+    if confirmed is not None: _close_source_issue(config,github,actual_reader,actual_merger); return confirmed
     ledger=None if github.unsafe_reason else adjudication_ledger_error(config,issue_number,pr,actual_reader)
     if blockers:=_blockers(config,github,pr,head,ledger): raise MergeAuthorityError("; ".join(blockers))
     actual_merger.merge(config.repo,pr.number,head); return MergeResult(MergeResultState.REQUESTED,pr.number,head)
