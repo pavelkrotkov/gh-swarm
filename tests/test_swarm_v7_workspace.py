@@ -54,6 +54,9 @@ class DeterministicWorkspaceTests(GitFixture):
         self.assertEqual(expected,base); self.assertNotEqual(orphan,self._git("rev-parse",self.branch,cwd=self.repo)); self.assertEqual(expected,self._git("rev-parse","HEAD",cwd=self.worktree)); self.assertEqual(expected,self.git.prepare(self.spec,started=False))
     def test_fresh_identity_preserves_prepared_marker(self):
         base=self.git.prepare(self.spec,started=False); self._git("worktree","remove","--force",str(self.worktree),cwd=self.repo); self.assertFalse(self.worktree.exists()); self.assertEqual(base,self.git.prepare(self.spec,started=False)); self.assertTrue(self.worktree.exists())
+    def test_recovery_reports_fresh_default_without_rewriting_stale_candidate(self):
+        self.git.prepare(self.spec,started=False); (self.worktree/"base.txt").write_text("candidate\n"); self._git("add",".",cwd=self.worktree); self._git("commit","-m","candidate",cwd=self.worktree); candidate=self._git("rev-parse","HEAD",cwd=self.worktree); expected=self.advance_main("merged predecessor")
+        self.assertEqual(expected,self.git.prepare(self.spec,started=True)); self.assertEqual(candidate,self._git("rev-parse","HEAD",cwd=self.worktree)); self.assertFalse(self.git.ancestor(expected,candidate))
     def test_fresh_identity_fails_closed_on_pr_remote_and_active_worktree(self):
         with self.subTest("PR"):
             with self.assertRaises(ws.WorkspaceCollision): self.git.prepare(self.spec,started=False,pr_exists=True)
