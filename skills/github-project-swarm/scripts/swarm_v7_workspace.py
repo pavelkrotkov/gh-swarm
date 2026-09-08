@@ -53,7 +53,7 @@ class GitWorkspace:
     def prepare(self,spec,*,started,pr_exists=False):
         if not all((spec.repo,spec.default_branch,spec.branch)): raise ValueError("repo/default/branch are required")
         self.validate_binding(spec.repo); default,local,remote=self.refresh(spec.default_branch,spec.branch); path=Path(spec.worktree); started,recovered=self._claim(spec,started,pr_exists,any((local,remote,path.exists())),all((local,not remote,not path.exists()))); self.ensure_branch(spec.branch,default,local if started else None,remote,started); self.ensure_worktree(spec.branch,path); (marker:=self._marker(spec)).parent.mkdir(parents=True,exist_ok=True); marker.touch()  # Marker converts a later fresh reconcile into recovery.
-        return default if not recovered else exact_sha(self.out(["merge-base",f"refs/remotes/origin/{spec.default_branch}",f"refs/heads/{spec.branch}"]))
+        return default
 def branch_name(swarm,issue):
     if not re.fullmatch(r"[A-Za-z0-9._-]+",swarm or "") or issue<1: raise ValueError("invalid swarm identity")
     return f"swarm/{swarm}/{issue}"
