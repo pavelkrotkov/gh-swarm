@@ -148,11 +148,10 @@ def _linked_prs(reader,repo,issue,issue_state=None):
 def _branch_prs(prs,branch): return prs if branch is None else [pr for pr in prs if isinstance(pr.get("head"),dict) and pr["head"].get("ref")==branch]
 def _select_pr(prs,branch=None,prefer_merged=False):
     prs=_branch_prs(prs,branch)
-    if prefer_merged:
-        return max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None)
-    opened=[pr for pr in prs if str(pr.get("state") or "").lower()=="open"]
+    if prefer_merged: return max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None)
+    opened=[pr for pr in prs if str(pr.get("state") or "").lower()=="open"]; merged=max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None)
     if len(opened)>1: raise UnsafeGitHubObservation("multiple open PRs are linked to the issue")
-    return next(iter(opened),max((pr for pr in prs if pr.get("merged_at")),key=lambda pr:str(pr.get("merged_at")),default=None))
+    return next(iter(opened),merged)
 def _merged_at(reader,repo,issue,branch=None): return max((str(pr["merged_at"]) for pr in _branch_prs(_linked_prs(reader,repo,issue),branch) if pr.get("merged_at")),default=None)
 def _issue_branch(config,issue,state=None): return None if state=="CLOSED" else f"swarm/{config.swarm_id}/{issue}"
 def _dependency_observation(config,rows,reader):
