@@ -110,10 +110,11 @@ class FakeReader:
 
     def list(self, endpoint):
         self.calls.append(("list", endpoint))
+        return self.values.get(endpoint, [])
+
     def graphql(self, query):
         self.calls.append(("graphql", query))
         return {"repository": {"issue": {"closedByPullRequestsReferences": {"nodes": []}}}}
-        return self.values.get(endpoint, [])
 
 
 def reader_for(
