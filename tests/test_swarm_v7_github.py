@@ -45,10 +45,10 @@ class ExactHeadPublicationTests(unittest.TestCase):
         with self.assertRaises(gh.UnsafeGitHubObservation): gh.review_publications(config(),46,H2,malformed)
         with self.assertRaises(gh.UnsafeGitHubObservation): gh.adjudication_publication(config(),46,H2,[decision(H2,ident=1),decision(H2,ident=2)])
     def test_unpadded_adjudication_payload_is_accepted(self):
-        encoded=base64.urlsafe_b64encode(json.dumps({"head_sha":H2,"decision":"accept"},separators=(",",":")).encode()).decode().rstrip("=")
+        encoded=base64.urlsafe_b64encode(json.dumps({"head_sha":H2,"decision":"changes"},separators=(",",":")).encode()).decode().rstrip("=")
         body=gh.adjudication_marker("test",46,H2)+f"\n<!-- hermes-swarm-decision-b64:{encoded} -->"
         publication,state=gh.adjudication_publication(config(),46,H2,[{"body":body}])
-        self.assertEqual(publication.head,H2); self.assertEqual(state,v7.AdjudicationDecision.ACCEPT)
+        self.assertEqual(publication.head,H2); self.assertEqual(state,v7.AdjudicationDecision.REVISE)
     def test_malformed_adjudication_payload_is_recoverable(self):
         encoded=base64.urlsafe_b64encode(json.dumps({"head_sha":H2,"decision":"accept"}).encode()).decode(); marker=gh.adjudication_marker("test",46,H2)
         rows=({"body":marker+f"\n<!-- hermes-swarm-decision-b64 --> {encoded}"},{"body":marker+"\n<!-- hermes-swarm-decision-b64:YWJj -->"})
