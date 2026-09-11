@@ -70,7 +70,9 @@ def review_publications(config,issue,head,rows):
 def payload(body,head):
     matches=_DECISION.findall(body)
     if len(matches)!=1: raise AdjudicationExecutionError("adjudication requires exactly one machine-readable decision payload")
-    try: value=json.loads(base64.b64decode(matches[0].encode(),altchars=b"-_",validate=True).decode())
+    try:
+        token=matches[0]+"="*((-len(matches[0]))%4)
+        value=json.loads(base64.b64decode(token.encode(),altchars=b"-_",validate=True).decode())
     except Exception as exc: raise AdjudicationExecutionError("invalid adjudication decision payload") from exc
     if not isinstance(value,dict): raise AdjudicationExecutionError("invalid adjudication decision payload")
     if not _SHA.fullmatch(payload_head:=str(value.get("head_sha") or "")) or payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
