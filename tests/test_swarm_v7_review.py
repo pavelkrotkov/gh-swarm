@@ -1,4 +1,5 @@
 import importlib
+import shlex
 import sys
 import unittest
 from pathlib import Path
@@ -75,6 +76,40 @@ class AdjudicationSlotTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_reviewer_prompt_pins_native_review_write_and_readback(self):
+        for head, slot in ((H1, 1), (H2, 2)):
+            with self.subTest(head=head, slot=slot):
+                body = rx.reviewer_task_spec(config(), target(head), slot).body
+                commands = [shlex.split(line.strip()) for line in body.splitlines() if line.strip().startswith("gh api ")]
+                endpoint = "repos/owner/repo/pulls/60/reviews"
+                self.assertEqual(commands, [
+                    ["gh", "api", "--method", "GET", "--paginate", endpoint],
+                    ["gh", "api", "--method", "POST", endpoint, "-f", "event=COMMENT", "-f", f"commit_id={head}", "-f", "body=$summary"],
+                    ["gh", "api", "--method", "GET", "--paginate", endpoint],
+                ])
+                self.assertIn(gh.review_marker("s", 49, slot, head), body)
+                self.assertIn(f"commit_id equals {head}", body)
+                self.assertIn("/issues/60/comments", body)
+                self.assertIn("/pulls/60/comments", body)
+
+    def test_reviewer_skill_and_task_share_fail_closed_publication_rules(self):
+        skill = (SCRIPTS.parents[1] / "github-project-reviewer" / "SKILL.md").read_text()
+        task = rx.reviewer_task_spec(config(), target(), 1).body
+        for name, text in (("skill", skill), ("task", task)):
+            with self.subTest(source=name):
+                for rule in (
+                    "submitted native GitHub pull-request review", "Publish the summary last",
+                    "Never use", "gh pr comment", "for the summary", "state equals COMMENTED",
+                    "submitted_at is present", "Missing fields are failures", "POST times out",
+                    "do not substitute an issue comment", "summary_review_id", "summary_review_url",
+                    "reviewed_head", "finding_comment_ids", "finish without new writes",
+                ):
+                    self.assertIn(rule, text)
+                self.assertLess(text.index("Before any publication"), text.index("Publish and verify"))
+                self.assertNotIn("when GitHub exposes", text)
+                self.assertNotIn("when exposed", text)
+                self.assertNotIn("summary_comment_id", text)
+
     def test_worker_contracts_require_publication_before_success(self):
         review_body = rx.reviewer_task_spec(config(), target(), 1).body; judge_body = rx.adjudicator_task_spec(config(), target()).body
         self.assertIn("Only then may the Kanban task report success", review_body); self.assertIn("Only then may the Kanban task report success", judge_body); self.assertIn("exactly one", review_body); self.assertIn("exactly one", judge_body); self.assertNotIn("review_publication_waits", review_body + judge_body); self.assertNotIn("round counter", review_body + judge_body)

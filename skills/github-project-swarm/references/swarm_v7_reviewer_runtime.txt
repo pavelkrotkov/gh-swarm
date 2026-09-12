@@ -4,8 +4,20 @@ Required publication marker: {marker}
 
 Do not depend on or modify the implementation worktree. Treat the Kanban workspace only as a launcher directory.
 Read the PR, issue, diff, tests, and relevant source from GitHub. If local source inspection is necessary, create a disposable temporary checkout, fetch the exact target SHA, detach at that SHA, and delete/abandon it afterward.
-Before publishing, re-read PR #{pr_number}; if its full head SHA is no longer {head}, publish nothing and fail this execution attempt.
-Publish the concise COMMENT review summary required by github-project-reviewer with the exact marker above. Bind the native review to commit {head} when GitHub exposes commit_id.
-After publishing, re-read GitHub reviews and verify exactly one summary for this reviewer slot/head is visible; if GitHub exposes commit_id, it must equal {head}.
-Only then may the Kanban task report success. If publication is not yet visible, keep re-observing within bounded API retries; do not claim success.
-If a valid exact-head publication already exists, verify it and finish without duplicating it.
+
+Publication contract — required for task success
+Your summary must be a submitted native GitHub pull-request review. An issue comment or inline review comment is not a review summary; the controller counts summaries only through /repos/{repo}/pulls/{pr_number}/reviews.
+
+1. Before any publication (including findings), re-read PR #{pr_number}; if its full head SHA is no longer {head}, publish nothing further and fail this execution attempt as stale. Through the terminal tool, look up existing native reviews, following every page:
+   gh api --method GET --paginate repos/{repo}/pulls/{pr_number}/reviews
+   If a review already contains this slot/head marker, validate it using step 4, verify its existing findings and finding count, re-read the head, and finish without new writes. Do not append findings after an existing summary. Duplicate, invalid, or inconsistent matching publications are failures; report the mismatch without another publication. Only continue to step 2 when no matching native review exists. An issue comment carrying the marker does not satisfy this lookup.
+2. Publish and verify worthwhile findings separately, inline when natural, otherwise as PR issue comments. Use the supplied marker, retain each finding's native comment ID, and keep those IDs separate from the summary review ID. Reuse verified existing findings on retries rather than duplicating them.
+3. Publish the summary last, after all findings are durably visible, even with zero findings. Prepare the shell variable summary with real newlines, the exact marker above, reviewed head, verdict, finding count, and conclusion (<=5 short lines / ~500 chars). Recheck the head and repeat the native-review lookup immediately before POST; if a review appeared, follow step 1's read-only recovery branch. Through the terminal tool, use this native-review request with every field explicit:
+   gh api --method POST repos/{repo}/pulls/{pr_number}/reviews -f event=COMMENT -f commit_id={head} -f body="$summary"
+   COMMENT is the review event; the submitted review state is COMMENTED. Do not omit event (that creates PENDING) or use APPROVE or REQUEST_CHANGES.
+   Never use gh pr comment, /repos/{repo}/issues/{pr_number}/comments, or /repos/{repo}/pulls/{pr_number}/comments for the summary. If native-review publication fails, report failure; do not substitute an issue comment. If the POST times out, return to step 1's lookup before retrying so a lost response does not create duplicate reviews.
+4. Read back from the same resource, following every page:
+   gh api --method GET --paginate repos/{repo}/pulls/{pr_number}/reviews
+   Require exactly one review containing the exact marker for this slot/head: commit_id equals {head}, state equals COMMENTED, and submitted_at is present. Missing fields are failures, not optional checks. Verify the finding comments and their count against the summary, and re-read the PR head again before reporting success.
+
+Only then may the Kanban task report success. If publication is not yet visible, keep re-observing within bounded API retries; if exhausted, report failure, not success. Return summary_review_id, summary_review_url, reviewed_head, and finding_comment_ids from verified GitHub records. A successful POST, local analysis, or an issue-comment URL is not completion evidence.
