@@ -47,6 +47,9 @@ class ReviewerSlotTests(unittest.TestCase):
     def test_failed_attempt_without_publication_gets_bounded_same_slot_replacement(self):
         adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.set_outcome(f"{key}:a2", kb.Outcome.ACTIVE); results = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)
         self.assertEqual(results[0].state, rx.SlotState.ACTIVE); self.assertEqual(results[0].attempt, 2); self.assertIn(key, adapter.by_key); self.assertIn(f"{key}:a2", adapter.by_key); self.assertEqual(adapter.created_specs[key].max_retries,1)
+    def test_per_slot_attempt_limits_do_not_leak(self):
+        adapter = FakeAdapter(); first = kb.semantic_key("s", 49, "review", slot=1, head=H1); second = kb.semantic_key("s", 49, "review", slot=2, head=H1); adapter.set_outcome(first, kb.Outcome.FAILURE); adapter.set_outcome(f"{first}:a2", kb.Outcome.ACTIVE); adapter.set_outcome(second, kb.Outcome.FAILURE); results = rx.reconcile_reviewers(config(), target(), (), adapter, (2,1))
+        self.assertEqual((results[0].state,results[0].attempt),(rx.SlotState.ACTIVE,2)); self.assertEqual((results[1].state,results[1].attempt),(rx.SlotState.EXHAUSTED,1)); self.assertNotIn(f"{second}:a2",adapter.by_key)
     def test_done_without_visible_publication_waits_and_never_replays(self):
         adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); first = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)[0]; second = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)[0]
         self.assertEqual(first.state, rx.SlotState.WAITING_PUBLICATION); self.assertEqual(second.state, rx.SlotState.WAITING_PUBLICATION); self.assertNotIn(f"{key}:a2", adapter.by_key)
