@@ -42,24 +42,24 @@ class ReviewerSlotTests(unittest.TestCase):
     def test_reviewer_uses_stable_launcher_not_implementation_worktree(self):
         spec = rx.reviewer_task_spec(config(), target(), 1); self.assertEqual(spec.workspace, "dir:/tmp/swarm-review-launcher"); self.assertEqual(spec.model,"reviewer-a"); self.assertEqual(spec.provider,"alpha"); self.assertEqual(spec.assignee,"sat-swarm"); self.assertIsNone(spec.branch); self.assertIn(H1, spec.body); self.assertIn("disposable temporary checkout", spec.body); self.assertIn("Do not depend on or modify the implementation worktree", spec.body)
     def test_publication_satisfies_slot_even_if_attempt_failed(self):
-        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.create(rx.reviewer_task_spec(config(), target(), 1), key); before = dict(adapter.by_key); result = rx.reconcile_reviewers(config(), target(), (review(1), review(2)), adapter)[0]
+        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.create(rx.reviewer_task_spec(config(), target(), 1), key); before = dict(adapter.by_key); result = rx.reconcile_reviewers(config(), target(), (review(1), review(2)), adapter, (2,2))[0]
         self.assertEqual(result.state, rx.SlotState.SATISFIED); self.assertEqual(adapter.by_key, before)
     def test_failed_attempt_without_publication_gets_bounded_same_slot_replacement(self):
-        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.set_outcome(f"{key}:a2", kb.Outcome.ACTIVE); results = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)
+        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.FAILURE); adapter.set_outcome(f"{key}:a2", kb.Outcome.ACTIVE); results = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (2,2))
         self.assertEqual(results[0].state, rx.SlotState.ACTIVE); self.assertEqual(results[0].attempt, 2); self.assertIn(key, adapter.by_key); self.assertIn(f"{key}:a2", adapter.by_key); self.assertEqual(adapter.created_specs[key].max_retries,1)
     def test_per_slot_attempt_limits_do_not_leak(self):
         adapter = FakeAdapter(); first = kb.semantic_key("s", 49, "review", slot=1, head=H1); second = kb.semantic_key("s", 49, "review", slot=2, head=H1); adapter.set_outcome(first, kb.Outcome.FAILURE); adapter.set_outcome(f"{first}:a2", kb.Outcome.ACTIVE); adapter.set_outcome(second, kb.Outcome.FAILURE); results = rx.reconcile_reviewers(config(), target(), (), adapter, (2,1))
         self.assertEqual((results[0].state,results[0].attempt),(rx.SlotState.ACTIVE,2)); self.assertEqual((results[1].state,results[1].attempt),(rx.SlotState.EXHAUSTED,1)); self.assertNotIn(f"{second}:a2",adapter.by_key)
     def test_done_without_visible_publication_waits_and_never_replays(self):
-        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); first = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)[0]; second = rx.reconcile_reviewers(config(), target(), (review(2),), adapter)[0]
+        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); first = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (2,2))[0]; second = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (2,2))[0]
         self.assertEqual(first.state, rx.SlotState.WAITING_PUBLICATION); self.assertEqual(second.state, rx.SlotState.WAITING_PUBLICATION); self.assertNotIn(f"{key}:a2", adapter.by_key)
     def test_head_drift_ignores_h1_execution_and_starts_fresh_h2_slot(self):
-        adapter = FakeAdapter(); h1 = rx.reconcile_reviewers(config(), target(H1), (), adapter)[0]; h2 = rx.reconcile_reviewers(config(), target(H2), (), adapter)[0]
+        adapter = FakeAdapter(); h1 = rx.reconcile_reviewers(config(), target(H1), (), adapter, (2,2))[0]; h2 = rx.reconcile_reviewers(config(), target(H2), (), adapter, (2,2))[0]
         self.assertEqual(h1.state, rx.SlotState.ACTIVE); self.assertEqual(h2.state, rx.SlotState.ACTIVE); self.assertNotEqual(h1.semantic_key, h2.semantic_key); self.assertIn(H1, h1.semantic_key); self.assertIn(H2, h2.semantic_key)
     def test_create_error_propagates_instead_of_falling_through_to_exhausted(self):
         class RaisingAdapter:
             def create(self, spec, key, attempt=1): raise kb.KanbanExecutionError("create failed")
-        with self.assertRaisesRegex(kb.KanbanExecutionError, "create failed"): rx.reconcile_reviewers(config(), target(), (review(2),), RaisingAdapter())
+        with self.assertRaisesRegex(kb.KanbanExecutionError, "create failed"): rx.reconcile_reviewers(config(), target(), (review(2),), RaisingAdapter(), (2,2))
 
 
 class AdjudicationSlotTests(unittest.TestCase):
