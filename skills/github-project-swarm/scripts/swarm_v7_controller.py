@@ -21,7 +21,7 @@ class RuntimeManifest:
     def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
 def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and ((age:=time.time()-float(cursor.get("created_at") or 0))<0 or age>=_STARTUP_GRACE_S)
-def _attempts(runtime,key,status=""): _need(runtime.max_attempts>0,"max_execution_attempts must be positive"); cursor=runtime.cursors.get(key); used=int(cursor.get("attempt") or 0) if isinstance(cursor,dict) else 0; return range(max(1,used),max(runtime.max_attempts,used+(2 if status.startswith("blocked:") else 1))+1)
+def _attempts(runtime,key,status=""): _need(runtime.max_attempts>0,"max_execution_attempts must be positive"); cursor=runtime.cursors.get(key); used=int(cursor.get("attempt") or 0) if isinstance(cursor,dict) else 0; return range(max(1,used),max(runtime.max_attempts,used+(1 if status.startswith("blocked:") else 0))+1)
 def _slot(runtime,key,kanban,execution):
     cursor=runtime.cursors.get(key)
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
