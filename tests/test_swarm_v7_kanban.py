@@ -61,9 +61,11 @@ class ContractTests(unittest.TestCase):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({"id":"run-1"}); self.assertTrue(adapter.observe(task_id).has_run)
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
     def test_stale_or_expired_running_run_is_retryable_failure(self):
-        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); fake.tasks[task_id]["status"]="running"; fake.tasks[task_id]["runs"]=[{"id":1,"started_at":100,"ended_at":110,"outcome":"completed","max_runtime_seconds":20}]; facts=adapter.observe(task_id); self.assertEqual((facts.status,facts.outcome),("run_completed",kb.Outcome.FAILURE))
-        fake.tasks[task_id]["runs"]=[{"id":2,"started_at":100,"ended_at":None,"outcome":None,"max_runtime_seconds":20}]
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); fake.tasks[task_id]["status"]="running"; old={"id":1,"started_at":100,"ended_at":110,"outcome":"completed","max_runtime_seconds":20}; active={"id":2,"started_at":120,"ended_at":None,"outcome":None,"max_runtime_seconds":20}; fake.tasks[task_id]["runs"]=[active,old]
         with patch.object(kb.time,"time",return_value=121): facts=adapter.observe(task_id)
+        self.assertEqual((facts.status,facts.outcome),("running",kb.Outcome.ACTIVE))
+        fake.tasks[task_id]["runs"]=[old]; facts=adapter.observe(task_id); self.assertEqual((facts.status,facts.outcome),("run_completed",kb.Outcome.FAILURE)); fake.tasks[task_id]["runs"]=[active]
+        with patch.object(kb.time,"time",return_value=141): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("timed_out",kb.Outcome.FAILURE))
     def test_live_create_prepares_headless_worker_for_agents_md_and_github_auth(self):
         with tempfile.TemporaryDirectory() as td:
