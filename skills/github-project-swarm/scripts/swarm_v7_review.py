@@ -32,7 +32,7 @@ def _slot(satisfied,key,spec,adapter,attempts,wait_success=True):
 def _slots(config,target,rows):
     slots=[row.slot for row in rows if row.head==target.head]; _need(not any(slot<1 or slot>len(config.reviewer_models) for slot in slots),"reviewer publication is outside configured slot range",ReviewExecutionError); _need(len(slots)==len(set(slots)),"duplicate reviewer publication for current head",ReviewExecutionError); return set(slots)
 def reconcile_reviewers(config,target,rows,adapter,max_attempts=2):
-    _target(config,target); present=_slots(config,target,rows); return tuple(_slot(slot in present,semantic_key(config.swarm_id,target.issue,"review",slot=slot,head=target.head),reviewer_task_spec(config,target,slot),adapter,max_attempts) for slot in range(1,len(config.reviewer_models)+1))
+    _target(config,target); present=_slots(config,target,rows); attempts=(max_attempts,)*len(config.reviewer_models) if isinstance(max_attempts,int) else max_attempts; return tuple(_slot(slot in present,semantic_key(config.swarm_id,target.issue,"review",slot=slot,head=target.head),reviewer_task_spec(config,target,slot),adapter,attempts[slot-1]) for slot in range(1,len(config.reviewer_models)+1))
 def reconcile_adjudication(config,target,reviewers,rows,adapter,max_attempts=2):
     _target(config,target); key=semantic_key(config.swarm_id,target.issue,"adjudication",head=target.head)
     if len(_slots(config,target,reviewers))!=len(config.reviewer_models): return SlotResult(SlotState.NOT_READY,key,reason="current head reviewer slots are incomplete")
