@@ -77,7 +77,7 @@ swarm:SWARM:issue:N:adjudication:FULL_HEAD_SHA
 swarm:SWARM:issue:N:revision:TRIGGERING_FULL_HEAD_SHA
 ```
 
-Attempt 1 uses the semantic key directly. A bounded replay uses `:a2`, `:a3`, and so on. Reissuing the same semantic/attempt key relies on Hermes' `--idempotency-key` contract to return the existing task, so a controller crash after create but before local persistence does not duplicate work.
+Attempt 1 uses the semantic key directly. Replay attempts use monotonically increasing `:a2`, `:a3`, and so on. The configured attempt bound caps the initial reconcile; after it is exhausted, later reconciles admit one fresh attempt above the persisted cursor instead of permanently reusing failed keys. Reissuing the same semantic/attempt key relies on Hermes' `--idempotency-key` contract to return the existing task, so a controller crash after create but before local persistence does not duplicate work.
 
 Task failure remains only an execution fact. Callers must check durable GitHub/git artifacts before deciding whether a failed attempt needs replay; the execution boundary never marks issues, dependencies, reviews, or merge authority semantically blocked.
 
