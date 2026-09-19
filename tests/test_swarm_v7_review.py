@@ -64,7 +64,7 @@ class ReviewerSlotTests(unittest.TestCase):
 
 class AdjudicationSlotTests(unittest.TestCase):
     def test_all_head_reviews_dispatch_exactly_one_adjudication_slot(self):
-        adapter = FakeAdapter(); reviewers = (review(1), review(2)); first = rx.reconcile_adjudication(config(), target(), reviewers, (), adapter, range(1,3)); second = rx.reconcile_adjudication(config(), target(), reviewers, (), adapter); key = kb.semantic_key("s", 49, "adjudication", head=H1)
+        adapter = FakeAdapter(); reviewers = (review(1), review(2)); first = rx.reconcile_adjudication(config(), target(), reviewers, (), adapter, range(1,3)); second = rx.reconcile_adjudication(config(), target(), reviewers, (), adapter, range(1,3)); key = kb.semantic_key("s", 49, "adjudication", head=H1)
         self.assertEqual(first.state, rx.SlotState.ACTIVE); self.assertEqual(second.state, rx.SlotState.ACTIVE); self.assertEqual(list(k for k in adapter.by_key if k.startswith(key)), [key]); self.assertEqual(adapter.created_specs[key].max_retries,1); self.assertEqual(adapter.created_specs[key].model,"judge"); self.assertEqual(adapter.created_specs[key].provider,"beta"); self.assertEqual(adapter.created_specs[key].assignee,"sat-swarm")
     def test_adjudication_not_dispatched_until_every_head_review_exists(self):
         adapter = FakeAdapter(); result = rx.reconcile_adjudication(config(), target(), (review(1),), (), adapter, range(1,3)); self.assertEqual(result.state, rx.SlotState.NOT_READY); self.assertEqual(adapter.by_key, {})
