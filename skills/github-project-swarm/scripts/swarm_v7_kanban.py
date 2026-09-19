@@ -1,6 +1,6 @@
 from collections import namedtuple
 from enum import Enum
-import json
+import json,time
 from pathlib import Path
 from swarm_v7_cli_process import ensure_worker_github_auth, run_command
 from swarm_v7_github import exact_sha
@@ -24,14 +24,16 @@ def create_args(spec,key,attempt=1):
     if spec.branch: args.extend(("--branch",spec.branch))
     for skill in spec.skills: args.extend(("--skill",skill))
     args.extend(("--model",spec.model))
-    if spec.provider: args.extend(("--provider",spec.provider))
-    return args
-def worker_body(repo,issue,branch,default_branch,base_sha,issue_text,*,revision=False):
-    exact_sha(base_sha); return _TEMPLATE.format(operation="revision" if revision else "implementation",repo=repo,issue=issue,branch=branch,default_branch=default_branch,base_sha=base_sha,issue_text=issue_text.strip())
+    args.extend(("--provider",spec.provider) if spec.provider else ()); return args
+def worker_body(repo,issue,branch,default_branch,base_sha,issue_text,*,revision=False): exact_sha(base_sha); return _TEMPLATE.format(operation="revision" if revision else "implementation",repo=repo,issue=issue,branch=branch,default_branch=default_branch,base_sha=base_sha,issue_text=issue_text.strip())
 def _task(raw):
     row=raw.get("task",raw) if isinstance(raw,dict) else {}; task_id=row.get("id") or row.get("task_id") or row.get("taskId")
     if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
     return row,str(task_id)
+# Closed runs under a running card, or open runs past their own limit, are stale execution facts.
+def _run_state(status,runs):
+    run=runs[-1] if status=="running" and runs else {}; started,limit=run.get("started_at"),run.get("max_runtime_seconds"); failed=run.get("ended_at") is not None; expired=None not in (started,limit) and time.time()-started>=limit
+    return (f"run_{run.get('outcome')}",Outcome.FAILURE) if failed else ("timed_out",Outcome.FAILURE) if expired else (status,_STATUS[status])
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
     def _run(self,args): return self.runner(("hermes","kanban","--board",self.board,*args,"--json"),self.cwd,self.timeout_s)
@@ -39,7 +41,7 @@ class KanbanAdapter:
     def create(self,spec,key,attempt=1):
         if self.live: ensure_worker_github_auth(spec.assignee); run_command(("hermes","-p",spec.assignee,"config","set","security.protected_instruction_files","false"),self.cwd,timeout=self.timeout_s)
         return _task(json.loads(self._run(create_args(spec,key,attempt)) or "{}"))[1]
-    def observe(self,task_id): row,observed=_task(json.loads(self._run(("show",task_id)) or "{}")); status=str(row.get("status") or "").strip().lower(); runs=json.loads(self._run(("runs",task_id)) or "[]"); runs=runs.get("runs",runs.get("task_runs",())) if isinstance(runs,dict) else runs; return TaskFacts(observed,status,_STATUS[status],row,bool(runs))
+    def observe(self,task_id): row,observed=_task(json.loads(self._run(("show",task_id)) or "{}")); status=str(row.get("status") or "").strip().lower(); runs=json.loads(self._run(("runs",task_id)) or "[]"); runs=runs.get("runs",runs.get("task_runs",())) if isinstance(runs,dict) else runs; status,outcome=_run_state(status,runs); return TaskFacts(observed,status,outcome,row,bool(runs))
     def probe_contract(self):
         prefix=("hermes","kanban","--board",self.board); version=self.runner(("hermes","--version"),self.cwd,self.timeout_s).strip(); self.runner(("hermes","kanban","boards","list","--json"),self.cwd,self.timeout_s); help_text=self.runner((*prefix,"create","--help"),self.cwd,self.timeout_s); self.runner((*prefix,"show","--help"),self.cwd,self.timeout_s)
         if missing:=[flag for flag in _REQUIRED if flag not in help_text]: raise KanbanExecutionError(f"Hermes Kanban create contract missing: {', '.join(missing)}")
