@@ -21,8 +21,7 @@ class RuntimeManifest:
     def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
 def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and ((age:=time.time()-float(cursor.get("created_at") or 0))<0 or age>=_STARTUP_GRACE_S)
-def _attempt_limit(runtime,key):
-    cursor=runtime.cursors.get(key); return max(runtime.max_attempts,int(cursor.get("attempt") or 0)+1) if isinstance(cursor,dict) else runtime.max_attempts
+def _attempt_limit(runtime,key): _need(runtime.max_attempts>0,"max_execution_attempts must be positive"); cursor=runtime.cursors.get(key); return max(runtime.max_attempts,int(cursor.get("attempt") or 0)+1) if isinstance(cursor,dict) else runtime.max_attempts
 def _slot(runtime,key,kanban,execution):
     cursor=runtime.cursors.get(key)
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
@@ -58,7 +57,6 @@ def plan_payload(plan): return {"phase":plan.phase.value,"action":plan.action.va
 def observation_payload(observed):
     pr=observed.github.pull_request; pull=None if pr is None else {"number":pr.number,"url":pr.url,"head":pr.head,"base":pr.base,"state":pr.state,"draft":pr.draft,"merged_at":pr.merged_at}; return {"issue_state":observed.github.issue_state,"blockers":[{"issue":row.issue_number,"state":row.state,"internal":row.internal,"merged_at":row.merged_at} for row in observed.github.blockers],"pr":pull,"execution":dict(observed.execution),"base_current":observed.planner.base_current,"unsafe_reason":observed.planner.unsafe_reason}
 def dispatch_attempts(runtime,adapter,key,spec):
-    _need(runtime.max_attempts>0,"max_execution_attempts must be positive")
     for attempt in range(1,_attempt_limit(runtime,key)+1):
         task=adapter.create(spec,key,attempt); runtime.cursors[key]={"task_id":task,"attempt":attempt,"created_at":time.time()}; facts=adapter.observe(task)
         if facts.outcome is not Outcome.FAILURE: return ActionResult(facts.outcome.value,(task,),f"attempt {attempt}: {facts.status}")
