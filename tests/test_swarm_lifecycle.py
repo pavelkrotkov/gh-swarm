@@ -57,9 +57,13 @@ class LifecycleTests(unittest.TestCase):
         rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
         with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
         self.assertEqual(rt.cursors["review-key"],{"task_id":"task-r","attempt":1,"created_at":1000})
-    def test_exhausted_implementation_attempt_fails_closed(self):
-        rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-2","attempt":2}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.FAILURE,status="blocked",has_run=True,task_id="task-2"); state,reason=_slot(rt,key,adapter,{})
-        self.assertEqual(state,ExecutionState.FAILED); self.assertIn("attempts exhausted",reason)
+    def test_exhausted_review_cursor_extends_next_reconcile_attempts(self):
+        rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r2","attempt":2}; pr=SimpleNamespace(number=3,head=head,reviewers=(),adjudication=None); obs=Observation(1,pr_head=head,ci=CiState.PASSED); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1,pull_request=pr),obs,{}),Plan(Phase.NEEDS_REVIEW,Action.START_REVIEW,"retry",head,"intent"))
+        with patch("swarm_v7_controller.reconcile_reviewers",return_value=()) as reconcile: apply_plan(rt,item,reader=Mock(),kanban=Mock(),workspace=Mock(),merger=Mock())
+        self.assertEqual(reconcile.call_args.args[-1],3)
+    def test_exhausted_implementation_attempt_retries_with_fresh_identity(self):
+        rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-2","attempt":2}; adapter=Mock(); adapter.create.side_effect=("task-1","task-2","task-3"); failure=SimpleNamespace(outcome=Outcome.FAILURE,status="blocked",has_run=True,task_id="task-2"); adapter.observe.side_effect=(failure,failure,failure,SimpleNamespace(outcome=Outcome.ACTIVE,status="running",has_run=True,task_id="task-3")); self.assertEqual(_slot(rt,key,adapter,{}),(ExecutionState.IDLE,None)); result=dispatch_attempts(rt,adapter,key,Mock())
+        self.assertEqual(result.task_ids,("task-3",)); self.assertEqual([call.args[2] for call in adapter.create.call_args_list],[1,2,3]); self.assertEqual(rt.cursors[key]["attempt"],3)
     def test_slot_maps_active_success_and_retryable_failure(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-1","attempt":1}; adapter=Mock()
         for attempt,outcome,status,expected in ((1,Outcome.ACTIVE,"running",ExecutionState.RUNNING),(1,Outcome.SUCCESS,"done",ExecutionState.IDLE),(2,Outcome.SUCCESS,"done",ExecutionState.IDLE),(1,Outcome.FAILURE,"blocked",ExecutionState.IDLE)):
