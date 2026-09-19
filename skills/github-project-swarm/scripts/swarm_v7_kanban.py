@@ -31,8 +31,9 @@ def _task(raw):
     if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
     return row,str(task_id)
 # Closed runs under a running card, or open runs past their own limit, are stale execution facts.
+def _elapsed(start,limit): return None not in (start,limit) and time.time()-start>=limit
 def _run_state(status,runs):
-    run=runs[-1] if status=="running" and runs else {}; started,ended,limit=(run.get(key) for key in ("started_at","ended_at","max_runtime_seconds")); failed=ended is not None and time.time()-ended>=_RETRY_GRACE_S; expired=None not in (started,limit) and time.time()-started>=limit
+    run=runs[-1] if status=="running" and runs else {}; failed=_elapsed(run.get("ended_at"),_RETRY_GRACE_S); expired=_elapsed(run.get("started_at"),run.get("max_runtime_seconds"))
     return (f"run_{run.get('outcome')}",Outcome.FAILURE) if failed else ("timed_out",Outcome.FAILURE) if expired else (status,_STATUS[status])
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
