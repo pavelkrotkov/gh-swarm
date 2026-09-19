@@ -58,7 +58,7 @@ class ContractTests(unittest.TestCase):
         fake.tasks[task_id]["status"] = "cancelled"
         with self.assertRaises(KeyError): adapter.observe(task_id)
     def test_assignee_and_run_record_are_execution_contract(self):
-        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({"id":"run-1"}); self.assertTrue(adapter.observe(task_id).has_run)
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({"id":1,"started_at":1}); self.assertTrue(adapter.observe(task_id).has_run)
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
     def test_stale_or_expired_running_run_is_retryable_failure(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); fake.tasks[task_id]["status"]="running"; old={"id":1,"started_at":100,"ended_at":110,"outcome":"completed","max_runtime_seconds":20}; active={"id":2,"started_at":120,"ended_at":None,"outcome":None,"max_runtime_seconds":20}; fake.tasks[task_id]["runs"]=[active,old]
