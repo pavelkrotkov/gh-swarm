@@ -57,10 +57,10 @@ class LifecycleTests(unittest.TestCase):
         rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
         with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
         self.assertEqual(rt.cursors["review-key"],{"task_id":"task-r","attempt":1,"created_at":1000})
-    def test_exhausted_review_cursor_extends_next_reconcile_attempts(self):
-        rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r2","attempt":2}; pr=SimpleNamespace(number=3,head=head,reviewers=(),adjudication=None); obs=Observation(1,pr_head=head,ci=CiState.PASSED); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1,pull_request=pr),obs,{}),Plan(Phase.NEEDS_REVIEW,Action.START_REVIEW,"retry",head,"intent"))
+    def test_exhausted_review_cursor_extends_only_its_slot(self):
+        rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r2","attempt":2}; rt.cursors["unrelated"]={"task_id":"task-x","attempt":100}; pr=SimpleNamespace(number=3,head=head,reviewers=(),adjudication=None); obs=Observation(1,pr_head=head,ci=CiState.PASSED); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1,pull_request=pr),obs,{}),Plan(Phase.NEEDS_REVIEW,Action.START_REVIEW,"retry",head,"intent"))
         with patch("swarm_v7_controller.reconcile_reviewers",return_value=()) as reconcile: apply_plan(rt,item,reader=Mock(),kanban=Mock(),workspace=Mock(),merger=Mock())
-        self.assertEqual(reconcile.call_args.args[-1],3)
+        self.assertEqual(reconcile.call_args.args[-1],(3,2))
     def test_exhausted_implementation_attempt_retries_with_fresh_identity(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-2","attempt":2}; adapter=Mock(); adapter.create.side_effect=("task-1","task-2","task-3"); failure=SimpleNamespace(outcome=Outcome.FAILURE,status="blocked",has_run=True,task_id="task-2"); adapter.observe.side_effect=(failure,failure,failure,SimpleNamespace(outcome=Outcome.ACTIVE,status="running",has_run=True,task_id="task-3")); self.assertEqual(_slot(rt,key,adapter,{}),(ExecutionState.IDLE,None)); result=dispatch_attempts(rt,adapter,key,Mock())
         self.assertEqual(result.task_ids,("task-3",)); self.assertEqual([call.args[2] for call in adapter.create.call_args_list],[1,2,3]); self.assertEqual(rt.cursors[key]["attempt"],3)
