@@ -32,7 +32,7 @@ def _task(raw):
     return row,str(task_id)
 # Closed runs under a running card, or open runs past their own limit, are stale execution facts.
 def _run_state(status,runs):
-    run=runs[-1] if status=="running" and runs else {}; started,limit=run.get("started_at"),run.get("max_runtime_seconds"); failed=run.get("ended_at") is not None; expired=None not in (started,limit) and time.time()-started>=limit
+    run=max(runs,key=lambda row:(row.get("started_at") or 0,row.get("id") or 0)) if status=="running" and runs else {}; started,limit=run.get("started_at"),run.get("max_runtime_seconds"); failed=run.get("ended_at") is not None; expired=None not in (started,limit) and time.time()-started>=limit
     return (f"run_{run.get('outcome')}",Outcome.FAILURE) if failed else ("timed_out",Outcome.FAILURE) if expired else (status,_STATUS[status])
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
