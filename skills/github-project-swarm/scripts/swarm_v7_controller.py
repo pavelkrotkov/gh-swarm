@@ -81,8 +81,7 @@ def _merge_action(ctx,plan):
 def _handlers(): return {Action.START_IMPLEMENTATION:lambda c,p:_worker(c,p,False),Action.START_REVISION:lambda c,p:_worker(c,p,True),Action.START_REVIEW:lambda c,p:_start_review(c,False),Action.START_ADJUDICATION:lambda c,p:_start_review(c,True),Action.MERGE:_merge_action}
 def _default(value,factory): return factory() if value is None else value
 def apply_plan(runtime,planned,*,reader=None,kanban=None,workspace=None,merger=None,executors=None):
-    if planned.plan.phase is Phase.MERGED and not runtime.config.paused:
-        issue=planned.observation.github.issue_number; reason=f"stale/cancelled: source issue #{issue} is closed and its PR is merged"; tasks=_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)).block_issue(issue,reason); return ActionResult("cancelled" if tasks else "noop",tasks,reason)
+    if planned.plan.phase is Phase.MERGED and not runtime.config.paused: issue=planned.observation.github.issue_number; reason=f"stale/cancelled: source issue #{issue} is closed and its PR is merged"; tasks=_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)).block_issue(issue,reason); return ActionResult("cancelled" if tasks else "noop",tasks,reason)
     if planned.plan.action is None: return ActionResult("suppressed" if planned.plan.would_action else "noop",detail=_need(not planned.observation.planner.unsafe_reason,planned.observation.planner.unsafe_reason) or planned.plan.reason)
     handler=_default(executors,_handlers).get(planned.plan.action)
     if handler is None: raise RuntimeError(f"no executor registered for planned action {planned.plan.action.value}")
