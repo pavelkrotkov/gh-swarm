@@ -21,12 +21,12 @@ def reviewer_task_spec(config,target,slot):
     model,provider=_model(config.reviewer_models[slot-1]); body=_REVIEWER.format(repo=target.repo,pr_number=target.pr_number,head=target.head,slot=slot,marker=review_marker(config.swarm_id,target.issue,slot,target.head)); return TaskSpec(f"[review {target.head[:8]}] #{target.issue} reviewer {slot}",body,workspace,model,target.assignee,provider=provider,skills=("github-project-reviewer",))
 def adjudicator_task_spec(config,target):
     workspace=_target(config,target); model,provider=_model(config.adjudicator_model); body=_ADJ.format(repo=target.repo,pr_number=target.pr_number,head=target.head,head_repr=repr(target.head),marker=adjudication_marker(config.swarm_id,target.issue,target.head)); return TaskSpec(f"[adjudicate {target.head[:8]}] #{target.issue}",body,workspace,model,target.assignee,provider=provider,skills=("github-project-adjudicator",))
-def _slot(satisfied,key,spec,adapter,attempts):
+def _slot(satisfied,key,spec,adapter,attempts,retry_success=False):
     if satisfied: return SlotResult(SlotState.SATISFIED,key,reason="durable exact-head GitHub publication exists")
-    if not attempts: raise ValueError("attempt range must not be empty")
+    if not attempts: raise ValueError("attempt range must not be empty"); done={Outcome.ACTIVE:(SlotState.ACTIVE,"execution attempt is active"),Outcome.SUCCESS:(SlotState.EXHAUSTED,"task ended successfully without durable publication")}
     for attempt in attempts:
         task=adapter.create(spec,key,attempt); outcome=adapter.observe(task).outcome
-        if outcome is not Outcome.FAILURE: return SlotResult(SlotState.ACTIVE if outcome is Outcome.ACTIVE else SlotState.EXHAUSTED,key,task,attempt,"execution attempt is active" if outcome is Outcome.ACTIVE else "task ended successfully without durable publication")
+        if outcome in done and not (retry_success and outcome is Outcome.SUCCESS): state,reason=done[outcome]; return SlotResult(state,key,task,attempt,reason)
     return SlotResult(SlotState.EXHAUSTED,key,task,attempt,"bounded execution attempts ended without publication")
 def _slots(config,target,rows):
     slots=[row.slot for row in rows if row.head==target.head]; _need(not any(slot<1 or slot>len(config.reviewer_models) for slot in slots),"reviewer publication is outside configured slot range",ReviewExecutionError); _need(len(slots)==len(set(slots)),"duplicate reviewer publication for current head",ReviewExecutionError); return set(slots)
@@ -36,4 +36,4 @@ def reconcile_adjudication(config,target,reviewers,rows,adapter,attempts):
     _target(config,target); key=semantic_key(config.swarm_id,target.issue,"adjudication",head=target.head)
     if len(_slots(config,target,reviewers))!=len(config.reviewer_models): return SlotResult(SlotState.NOT_READY,key,reason="current head reviewer slots are incomplete")
     current=[row for row in rows if row.head==target.head]; _need(len(current)<=1,"duplicate adjudication publications for current head",ReviewExecutionError)
-    return _slot(bool(current),key,adjudicator_task_spec(config,target),adapter,attempts)
+    return _slot(bool(current),key,adjudicator_task_spec(config,target),adapter,attempts,True)
