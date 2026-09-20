@@ -94,7 +94,7 @@ class LifecycleTests(unittest.TestCase):
         adapter.create.assert_not_called()
     def test_merged_plan_blocks_orphan_tasks_before_noop(self):
         rt=runtime(issues=(1,)); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1),Observation(1,merged=True),{}),Plan(Phase.MERGED,None,"merged",None,None)); adapter=Mock(); adapter.block_issue.side_effect=(("task-1",),())
-        first=apply_plan(rt,item,kanban=adapter); second=apply_plan(rt,item,kanban=adapter); self.assertEqual((first.outcome,first.task_ids,second.outcome),( "cancelled",("task-1",),"noop")); self.assertEqual(adapter.block_issue.call_count,2)
+        first=apply_plan(rt,item,kanban=adapter); second=apply_plan(rt,item,kanban=adapter); self.assertEqual((first.outcome,first.task_ids,second.outcome),( "cancelled",("task-1",),"noop")); self.assertEqual(adapter.block_issue.call_count,2); self.assertEqual(adapter.block_issue.call_args_list[0].args[:2],("demo",1))
 
     def test_reconcile_applies_once_and_failure_does_not_persist(self):
         rt,item=runtime(issues=(1,)),planned(); result=ActionResult("active",("task-1",))
