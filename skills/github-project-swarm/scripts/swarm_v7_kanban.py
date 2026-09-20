@@ -35,7 +35,7 @@ def _run_state(status,runs):
     state=(status,_STATUS[status])
     if status!="running": return state
     run=(runs or ({},))[-1]; ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds")
-    if ended is not None: return (f"run_{run.get('outcome')}",Outcome.FAILURE) if now-ended>=_RETRY_GRACE_S else state
+    if ended is not None: return (f"run_{run.get('outcome')}",Outcome.FAILURE) if now-ended>=120 else state
     return ("timed_out",Outcome.FAILURE) if None not in (started,limit) and now-started>=limit else state
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
