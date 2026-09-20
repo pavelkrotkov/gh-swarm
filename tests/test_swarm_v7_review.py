@@ -50,9 +50,9 @@ class ReviewerSlotTests(unittest.TestCase):
     def test_per_slot_attempt_ranges_do_not_leak_or_rescan(self):
         adapter = FakeAdapter(); first = kb.semantic_key("s", 49, "review", slot=1, head=H1); second = kb.semantic_key("s", 49, "review", slot=2, head=H1); adapter.set_outcome(f"{first}:a100", kb.Outcome.FAILURE); adapter.set_outcome(f"{first}:a101", kb.Outcome.ACTIVE); adapter.set_outcome(second, kb.Outcome.FAILURE); results = rx.reconcile_reviewers(config(), target(), (), adapter, (range(100,102),range(1,2)))
         self.assertEqual((results[0].state,results[0].attempt),(rx.SlotState.ACTIVE,101)); self.assertEqual((results[1].state,results[1].attempt),(rx.SlotState.EXHAUSTED,1)); self.assertNotIn(first,adapter.by_key); self.assertNotIn(f"{second}:a2",adapter.by_key)
-    def test_done_without_visible_publication_waits_and_never_replays(self):
-        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); first = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (range(1,3),range(1,3)))[0]; second = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (range(1,3),range(1,3)))[0]
-        self.assertEqual(first.state, rx.SlotState.WAITING_PUBLICATION); self.assertEqual(second.state, rx.SlotState.WAITING_PUBLICATION); self.assertNotIn(f"{key}:a2", adapter.by_key)
+    def test_success_without_visible_publication_uses_next_bounded_attempt(self):
+        adapter = FakeAdapter(); key = kb.semantic_key("s", 49, "review", slot=1, head=H1); adapter.set_outcome(key, kb.Outcome.SUCCESS); adapter.set_outcome(f"{key}:a2", kb.Outcome.ACTIVE); result = rx.reconcile_reviewers(config(), target(), (review(2),), adapter, (range(1,3),range(1,3)))[0]
+        self.assertEqual((result.state,result.attempt),(rx.SlotState.ACTIVE,2)); self.assertIn(f"{key}:a2",adapter.by_key)
     def test_head_drift_ignores_h1_execution_and_starts_fresh_h2_slot(self):
         adapter = FakeAdapter(); h1 = rx.reconcile_reviewers(config(), target(H1), (), adapter, (range(1,3),range(1,3)))[0]; h2 = rx.reconcile_reviewers(config(), target(H2), (), adapter, (range(1,3),range(1,3)))[0]
         self.assertEqual(h1.state, rx.SlotState.ACTIVE); self.assertEqual(h2.state, rx.SlotState.ACTIVE); self.assertNotEqual(h1.semantic_key, h2.semantic_key); self.assertIn(H1, h1.semantic_key); self.assertIn(H2, h2.semantic_key)
