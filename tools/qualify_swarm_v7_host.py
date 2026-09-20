@@ -247,6 +247,10 @@ def contract_probes(h: Harness) -> None:
     create_help = h.run(["hermes", "kanban", "create", "--help"]).stdout
     for flag in ("--body", "--workspace", "--branch", "--idempotency-key", "--max-retries", "--max-runtime", "--assignee", "--model"):
         assert_true(flag in create_help, f"Hermes Kanban create contract missing {flag}")
+    head="1"*40; marker=f"<!-- hermes-swarm-adjudication:s:1:{head} -->"; body=(ROOT/"skills/github-project-swarm/references/swarm_v7_adjudicator_runtime.txt").read_text().format(repo="owner/repo",pr_number=1,head=head,head_repr=repr(head),marker=marker)
+    verify=next((line.strip("`") for line in body.splitlines() if line.startswith("`gh api ")), ""); assert_true(bool(verify), "adjudicator runtime has no headless verification command")
+    safe = h.run(["hermes", "approvals", "test", "--json", "--", verify], check=False)
+    assert_true(safe.returncode == 0, f"headless adjudicator verification would require approval: {safe.stdout.strip() or safe.stderr.strip()}")
     probe = f"qual-probe-{uuid.uuid4().hex[:8]}"
     h.run(["hermes", "kanban", "boards", "create", probe, "--name", "Skillfleet qualification probe"])
     h.boards.append(probe)

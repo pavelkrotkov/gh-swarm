@@ -116,6 +116,10 @@ class ContractTests(unittest.TestCase):
     def test_worker_contracts_require_publication_before_success(self):
         review_body = rx.reviewer_task_spec(config(), target(), 1).body; judge_body = rx.adjudicator_task_spec(config(), target()).body
         self.assertIn("Only then may the Kanban task report success", review_body); self.assertIn("Only then may the Kanban task report success", judge_body); self.assertIn("exactly one", review_body); self.assertIn("exactly one", judge_body); self.assertNotIn("review_publication_waits", review_body + judge_body); self.assertNotIn("round counter", review_body + judge_body)
+    def test_adjudicator_has_headless_safe_decode_and_fail_fast_contract(self):
+        skill=(SCRIPTS.parents[1]/"github-project-adjudicator"/"SKILL.md").read_text(); body=rx.adjudicator_task_spec(config(),target()).body; contract="If command safety blocks a required verification command, fail the execution attempt immediately"
+        for text in (skill,body): text=" ".join(text.split()); self.assertIn("inline interpreter scripts",text); self.assertIn(contract,text); self.assertIn("heartbeat",text.lower())
+        commands=[line.strip("`") for line in body.splitlines() if line.startswith("`gh api ")]; self.assertEqual(len(commands),1); self.assertIn("| base64 -d | jq -e .",commands[0]); self.assertNotRegex(commands[0],r"\b(?:python|node|perl|ruby)\w*")
 
 
 if __name__ == "__main__": unittest.main()
