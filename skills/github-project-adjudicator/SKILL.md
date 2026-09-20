@@ -31,10 +31,14 @@ it against the same exact-head ledger and do not duplicate it.
 
 After publication, re-read GitHub and verify exactly one matching adjudication is visible,
 the machine payload decodes successfully, its full `head_sha` and decision match what was
-published, and its dispositions still exactly cover the current-head finding ledger.
-Report Kanban success only after this durable re-observation succeeds; if publication
-visibility lags, keep re-observing within bounded API retries rather than claiming success
-first.
+published, and its dispositions still exactly cover the current-head finding ledger. For
+headless verification use direct `gh api --jq` and ordinary shell filters; never replace
+that path with inline interpreter scripts (`python -c`, interpreter heredocs, subprocess
+wrappers, or equivalents). If command safety blocks a required verification command, fail
+the execution attempt immediately with the blocked command/message rather than retrying
+script variants or continuing to heartbeat. Report Kanban success only after durable
+re-observation succeeds; if publication visibility lags, keep re-observing within bounded
+API retries rather than claiming success first.
 
 Return a concise execution handoff stating whether a valid publication exists and its PR
 comment URL/ID. The publication, not the handoff, is authoritative.
