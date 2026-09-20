@@ -20,21 +20,20 @@ def semantic_key(swarm,issue,kind,*,head=None,slot=None):
     raise ValueError("invalid semantic execution identity")
 def create_args(spec,key,attempt=1):
     if spec.branch and not spec.workspace.startswith("worktree"): raise ValueError("--branch is only valid for worktree workspaces")
-    args=["create",spec.title,"--body",spec.body,"--workspace",spec.workspace,"--max-retries",str(spec.max_retries),"--max-runtime",spec.max_runtime,"--idempotency-key",attempt_key(key,attempt),"--assignee",spec.assignee]
-    if spec.branch: args.extend(("--branch",spec.branch))
+    args=["create",spec.title,"--body",spec.body,"--workspace",spec.workspace,"--max-retries",str(spec.max_retries),"--max-runtime",spec.max_runtime,"--idempotency-key",attempt_key(key,attempt),"--assignee",spec.assignee]; args.extend(("--branch",spec.branch)*bool(spec.branch))
     for skill in spec.skills: args.extend(("--skill",skill))
-    args.extend(("--model",spec.model))
-    args.extend(("--provider",spec.provider) if spec.provider else ()); return args
+    args.extend(("--model",spec.model)); args.extend(("--provider",spec.provider)*bool(spec.provider)); return args
 def worker_body(repo,issue,branch,default_branch,base_sha,issue_text,*,revision=False): exact_sha(base_sha); return _TEMPLATE.format(operation="revision" if revision else "implementation",repo=repo,issue=issue,branch=branch,default_branch=default_branch,base_sha=base_sha,issue_text=issue_text.strip())
 def _task(raw):
     row=raw.get("task",raw) if isinstance(raw,dict) else {}; task_id=row.get("id") or row.get("task_id") or row.get("taskId")
     if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
     return row,str(task_id)
 # Closed runs under a running card, or open runs past their own limit, are stale execution facts.\n# Give Hermes two default dispatcher ticks to launch its internal retry before swarm replay.
-def _elapsed(start,limit): return None not in (start,limit) and time.time()-start>=limit
 def _run_state(status,runs):
-    run=runs[-1] if status=="running" and runs else {}; ended=run.get("ended_at"); failed=_elapsed(ended,_RETRY_GRACE_S); expired=ended is None and _elapsed(run.get("started_at"),run.get("max_runtime_seconds"))
-    return (f"run_{run.get('outcome')}",Outcome.FAILURE) if failed else ("timed_out",Outcome.FAILURE) if expired else (status,_STATUS[status])
+    if status!="running": return status,_STATUS[status]
+    run=(runs or ({},))[-1]; ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds")
+    if ended is not None and now-ended>=_RETRY_GRACE_S: return f"run_{run.get('outcome')}",Outcome.FAILURE
+    return ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit else ("running",Outcome.ACTIVE)
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
     def _run(self,args): return self.runner(("hermes","kanban","--board",self.board,*args,"--json"),self.cwd,self.timeout_s)
