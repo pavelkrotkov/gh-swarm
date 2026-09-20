@@ -52,8 +52,7 @@ def journal(runtime,issue,planned,result,elapsed_ms,error=None):
     fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); row={"ts":time.time(),"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":"error" if error else "none" if result is None else result.outcome,"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),**fields}; STATE.mkdir(parents=True,exist_ok=True)
     with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n")
 def _model(value):
-    parts=shlex.split(value)
-    if len(parts)==1: return parts[0]
+    if len(parts:=shlex.split(value))==1: return parts[0]
     if len(parts)==3 and parts[1]=="--provider": return shlex.join(parts)
     raise ValueError(f"invalid model spec: {value!r}")
 def _issues(args,repo,reader):
