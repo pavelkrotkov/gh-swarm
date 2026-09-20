@@ -28,8 +28,13 @@ class FakeHermes:
         if action == "create":
             key = cmd[cmd.index("--idempotency-key") + 1]
             if key not in self.by_key:
-                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "status": "todo", "runs": []}
+                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "title": cmd[5], "status": "todo", "runs": []}
             return json.dumps({"task": self.tasks[self.by_key[key]]})
+        if action == "list": return json.dumps(list(self.tasks.values()))
+        if action == "block":
+            ids=[cmd[5]]+(cmd[cmd.index("--ids")+1:] if "--ids" in cmd else [])
+            for tid in ids: self.tasks[tid]["status"]="blocked"
+            return ""
         tid = cmd[5]
         if action == "show": return json.dumps({"task": self.tasks[tid]})
         if action == "runs": return json.dumps({"runs": self.tasks[tid]["runs"]})
@@ -57,6 +62,11 @@ class ContractTests(unittest.TestCase):
         for status, outcome in expected.items(): fake.tasks[task_id]["status"] = status; self.assertEqual(adapter.observe(task_id).outcome, outcome)
         fake.tasks[task_id]["status"] = "cancelled"
         with self.assertRaises(KeyError): adapter.observe(task_id)
+    def test_terminal_issue_cleanup_blocks_only_active_swarm_cards_and_is_idempotent(self):
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); stale=adapter.create(spec(title="[revise] #57"),"stale"); review=adapter.create(spec(title="[review abcdef12] #57 reviewer 1"),"review"); done=adapter.create(spec(title="[adjudicate abcdef12] #57"),"done"); other=adapter.create(spec(title="[revise] #58"),"other")
+        for tid in (stale,review,other): fake.tasks[tid]["status"]="ready"; fake.tasks[tid]["assignee"]=None
+        fake.tasks[done]["status"]="done"; self.assertEqual(adapter.block_issue(57,"stale/cancelled"),(stale,review)); self.assertEqual((fake.tasks[stale]["status"],fake.tasks[review]["status"],fake.tasks[done]["status"],fake.tasks[other]["status"]),("blocked","blocked","done","ready")); self.assertEqual(adapter.block_issue(57,"stale/cancelled"),())
+
     def test_assignee_and_run_record_are_execution_contract(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({}); self.assertTrue(adapter.observe(task_id).has_run)
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
