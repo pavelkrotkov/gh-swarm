@@ -28,12 +28,14 @@ def _task(raw):
     row=raw.get("task",raw) if isinstance(raw,dict) else {}; task_id=row.get("id") or row.get("task_id") or row.get("taskId")
     if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
     return row,str(task_id)
-# Closed runs under a running card, or open runs past their own limit, are stale execution facts.\n# Give Hermes two default dispatcher ticks to launch its internal retry before swarm replay.
+# Closed runs under a running card, or open runs past their own limit, are stale execution facts.
+# Give Hermes two default dispatcher ticks to launch its internal retry before swarm replay.
+# Run ordering is normalized before this check; CLI result order is not an execution contract.
+def _running_run(status,runs): return runs[-1] if status=="running" and runs else {}
 def _run_state(status,runs):
-    if status!="running": return status,_STATUS[status]
-    run=(runs or ({},))[-1]; ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds")
+    run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds")
     if ended is not None and now-ended>=_RETRY_GRACE_S: return f"run_{run.get('outcome')}",Outcome.FAILURE
-    return ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit else ("running",Outcome.ACTIVE)
+    return ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit else (status,_STATUS[status])
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
     def _run(self,args): return self.runner(("hermes","kanban","--board",self.board,*args,"--json"),self.cwd,self.timeout_s)
