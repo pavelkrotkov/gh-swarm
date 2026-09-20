@@ -57,6 +57,9 @@ class LifecycleTests(unittest.TestCase):
         rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
         with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
         self.assertEqual(rt.cursors["review-key"],{"task_id":"task-r","attempt":1,"created_at":1000})
+    def test_successful_review_without_publication_stalls_immediately(self):
+        rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r1","attempt":1}; planner=Observation(1,pr_head=head,ci=CiState.PASSED); github=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=head,reviewers=(SimpleNamespace(slot=2),)),planner=planner); adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.SUCCESS,status="done",has_run=True,task_id="task-r1")
+        observed=_overlay(rt,github,adapter,{}); plan=plan_issue(observed,rt.config); self.assertEqual((observed.review,plan.phase,plan.action),(ReviewState.UNKNOWN,Phase.EXECUTION_STALLED,None)); self.assertIn("execution attempts exhausted",observed.unsafe_reason)
     def test_exhausted_review_cursor_extends_only_its_slot(self):
         rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r2","attempt":2}; rt.cursors["unrelated"]={"task_id":"task-x","attempt":100}; pr=SimpleNamespace(number=3,head=head,reviewers=(),adjudication=None); obs=Observation(1,pr_head=head,ci=CiState.PASSED); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1,pull_request=pr),obs,{key:"blocked:a2"}),Plan(Phase.NEEDS_REVIEW,Action.START_REVIEW,"retry",head,"intent"))
         with patch("swarm_v7_controller.reconcile_reviewers",return_value=()) as reconcile: apply_plan(rt,item,reader=Mock(),kanban=Mock(),workspace=Mock(),merger=Mock())

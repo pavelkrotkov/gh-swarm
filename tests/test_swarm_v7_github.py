@@ -14,7 +14,7 @@ gh = importlib.import_module("swarm_v7_github")
 H1 = "1" * 40; H2 = "2" * 40
 
 def config(): return v7.ManifestV7(swarm_id="test",repo="owner/repo",default_branch="main",issues=(45,46),worker_model="worker",reviewer_models=("reviewer-a","reviewer-b"),adjudicator_model="adjudicator")
-def review(slot, head, native=None, ident=None): return {"id":ident or slot,"body":gh.review_marker("test",46,slot,head),"commit_id":native if native is not None else head}
+def review(slot, head, native=None, ident=None): return {"id":ident or slot,"body":gh.review_marker("test",46,slot,head),"commit_id":native if native is not None else head,"state":"COMMENTED","submitted_at":"2026-09-12T00:00:00Z"}
 def decision(head, value="accept", ident=10):
     payload=base64.urlsafe_b64encode(json.dumps({"head_sha":head,"decision":value},separators=(",",":")).encode()).decode(); return {"id":ident,"body":gh.adjudication_marker("test",46,head)+f"\n<!-- hermes-swarm-decision-b64:{payload} -->"}
 def pr(number, head, *, state="open", merged_at=None, mergeable=True, branch="swarm/test/46"): return {"number":number,"html_url":f"https://github.com/owner/repo/pull/{number}","state":state,"draft":False,"base":{"ref":"main"},"head":{"sha":head,"ref":branch},"mergeable":mergeable,"mergeable_state":"clean" if mergeable else "dirty","merged_at":merged_at,"labels":[]}
@@ -34,6 +34,10 @@ class ExactHeadPublicationTests(unittest.TestCase):
         pubs,state=gh.review_publications(config(),46,H2,[review(1,H1)]); self.assertEqual(pubs,()); self.assertEqual(state,v7.ReviewState.NONE)
     def test_native_commit_id_must_match_claimed_head(self):
         with self.assertRaises(gh.UnsafeGitHubObservation): gh.review_publications(config(),46,H2,[review(1,H2,native=H1)])
+    def test_review_publication_requires_submitted_comment_review(self):
+        marker=gh.review_marker("test",46,1,H2); rows=({"body":marker,"commit_id":H2,"state":"PENDING","submitted_at":"2026-09-12T00:00:00Z"},{"body":marker,"commit_id":H2,"state":"COMMENTED"},{"body":marker,"state":"COMMENTED","submitted_at":"2026-09-12T00:00:00Z"})
+        for row in rows:
+            with self.assertRaises(gh.UnsafeGitHubObservation): gh.review_publications(config(),46,H2,[row])
     def test_all_slots_are_recovered_from_github_only(self):
         pubs,state=gh.review_publications(config(),46,H2,[review(2,H2),review(1,H2)]); self.assertEqual([x.slot for x in pubs],[1,2]); self.assertEqual(state,v7.ReviewState.DISPUTED)
     def test_old_head_adjudication_is_ignored(self):
