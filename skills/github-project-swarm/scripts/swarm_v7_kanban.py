@@ -28,6 +28,8 @@ def _task(raw):
     row=raw.get("task",raw) if isinstance(raw,dict) else {}; task_id=row.get("id") or row.get("task_id") or row.get("taskId")
     if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
     return row,str(task_id)
+def _issue_task(row,issue):
+    title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and title.startswith(("[implement]","[revise]","[review ","[adjudicate ")) and number==str(issue)
 # Closed runs under a running card, or open runs past their own limit, are stale execution facts.
 # Give Hermes two default dispatcher ticks to launch its internal retry before swarm replay.
 # Run ordering is normalized before this check; CLI result order is not an execution contract.
@@ -43,6 +45,12 @@ class KanbanAdapter:
     def create(self,spec,key,attempt=1):
         if self.live: ensure_worker_github_auth(spec.assignee); run_command(("hermes","-p",spec.assignee,"config","set","security.protected_instruction_files","false"),self.cwd,timeout=self.timeout_s)
         return _task(json.loads(self._run(create_args(spec,key,attempt)) or "{}"))[1]
+    def block_issue(self,issue,reason):
+        rows=json.loads(self._run(("list",)) or "[]")
+        if not isinstance(rows,list): raise KanbanExecutionError("Hermes Kanban list response is malformed")
+        ids=tuple(str(row["id"]) for row in rows if isinstance(row,dict) and _issue_task(row,issue))
+        if ids: self.runner(("hermes","kanban","--board",self.board,"block",ids[0],reason)+(( "--ids",*ids[1:]) if len(ids)>1 else ()),self.cwd,self.timeout_s)
+        return ids
     def observe(self,task_id): row,observed=_task(json.loads(self._run(("show",task_id)) or "{}")); status=str(row.get("status") or "").strip().lower(); runs=json.loads(self._run(("runs",task_id)) or "[]"); runs=runs.get("runs",runs.get("task_runs",())) if isinstance(runs,dict) else runs; runs.sort(key=lambda row:(row.get("started_at") or 0,int(row.get("id") or 0))); status,outcome=_run_state(status,runs); return TaskFacts(observed,status,outcome,row,bool(runs))
     def probe_contract(self):
         prefix=("hermes","kanban","--board",self.board); version=self.runner(("hermes","--version"),self.cwd,self.timeout_s).strip(); self.runner(("hermes","kanban","boards","list","--json"),self.cwd,self.timeout_s); help_text=self.runner((*prefix,"create","--help"),self.cwd,self.timeout_s); self.runner((*prefix,"show","--help"),self.cwd,self.timeout_s)
