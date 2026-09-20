@@ -26,7 +26,7 @@ def _slot(satisfied,key,spec,adapter,attempts):
     if not attempts: raise ValueError("attempt range must not be empty")
     for attempt in attempts:
         task=adapter.create(spec,key,attempt); outcome=adapter.observe(task).outcome
-        if outcome is Outcome.ACTIVE: return SlotResult(SlotState.ACTIVE,key,task,attempt,"execution attempt is active")
+        if outcome is not Outcome.FAILURE: return SlotResult(SlotState.ACTIVE if outcome is Outcome.ACTIVE else SlotState.EXHAUSTED,key,task,attempt,"execution attempt is active" if outcome is Outcome.ACTIVE else "task ended successfully without durable publication")
     return SlotResult(SlotState.EXHAUSTED,key,task,attempt,"bounded execution attempts ended without publication")
 def _slots(config,target,rows):
     slots=[row.slot for row in rows if row.head==target.head]; _need(not any(slot<1 or slot>len(config.reviewer_models) for slot in slots),"reviewer publication is outside configured slot range",ReviewExecutionError); _need(len(slots)==len(set(slots)),"duplicate reviewer publication for current head",ReviewExecutionError); return set(slots)
