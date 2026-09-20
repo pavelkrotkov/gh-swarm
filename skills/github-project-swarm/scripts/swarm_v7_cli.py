@@ -106,7 +106,8 @@ def explain(*,name,issue,json_output=False):
     if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} is not configured in swarm {runtime.config.swarm_id}")
     row=_snapshot(runtime,issue,plan_once(runtime,issue)); print(json.dumps(row,ensure_ascii=False,sort_keys=True) if json_output else _render(row))
 def reconcile_runtime(runtime):
-    errors=[]
+    errors=[]; sweep=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).watchdog()
+    if sweep.get("skipped_locked"): raise RuntimeError("Kanban watchdog pass skipped: dispatcher lock busy")
     for issue in runtime.config.issues:
         started=time.monotonic(); planned=result=error=None
         try:
