@@ -247,7 +247,7 @@ def contract_probes(h: Harness) -> None:
     create_help = h.run(["hermes", "kanban", "create", "--help"]).stdout
     for flag in ("--body", "--workspace", "--branch", "--idempotency-key", "--max-retries", "--max-runtime", "--assignee", "--model"):
         assert_true(flag in create_help, f"Hermes Kanban create contract missing {flag}")
-    safe = h.run(["hermes", "approvals", "test", "--json", "--", "gh", "api", "--method", "GET", "--paginate", "repos/owner/repo/issues/1/comments", "--jq", "\'.[] | select(.body | contains(\\\"<!-- hermes-swarm-adjudication:s:1:40 -->\\\")) | .body\'", "|", "grep", "-o", "\'hermes-swarm-decision-b64:[A-Za-z0-9_=-]*\'", "|", "cut", "-d:", "-f2-", "|", "tr", "\'_-\'", "\'/+\'", "|", "base64", "-d", "|", "jq", "-e", "."], check=False)
+    safe = h.run(["hermes", "approvals", "test", "--json", "--", "gh", "api", "--method", "GET", "--paginate", "repos/owner/repo/issues/1/comments", "--jq", "\'.[] | select(.body | contains(\"<!-- hermes-swarm-adjudication:s:1:1111111111111111111111111111111111111111 -->\")) | .body\'", "|", "grep", "-o", "\'hermes-swarm-decision-b64:[A-Za-z0-9_=-]*\'", "|", "cut", "-d:", "-f2-", "|", "tr", "\'_-\'", "\'/+\'", "|", "base64", "-d", "|", "jq", "-e", "."], check=False)
     assert_true(safe.returncode == 0, f"headless adjudicator verification would require approval: {safe.stdout.strip() or safe.stderr.strip()}")
     probe = f"qual-probe-{uuid.uuid4().hex[:8]}"
     h.run(["hermes", "kanban", "boards", "create", probe, "--name", "Skillfleet qualification probe"])
