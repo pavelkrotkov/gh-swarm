@@ -92,6 +92,10 @@ class LifecycleTests(unittest.TestCase):
         rt=runtime(issues=(1,)); rt.max_attempts=0; adapter=Mock()
         with self.assertRaisesRegex(ValueError,"max_execution_attempts must be positive"): dispatch_attempts(rt,adapter,"issue:1:implementation",Mock())
         adapter.create.assert_not_called()
+    def test_merged_plan_blocks_orphan_tasks_before_noop(self):
+        rt=runtime(issues=(1,)); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1),Observation(1,merged=True),{}),Plan(Phase.MERGED,None,"merged",None,None)); adapter=Mock(); adapter.block_issue.side_effect=(("task-1",),())
+        first=apply_plan(rt,item,kanban=adapter); second=apply_plan(rt,item,kanban=adapter); self.assertEqual((first.outcome,first.task_ids,second.outcome),( "cancelled",("task-1",),"noop")); self.assertEqual(adapter.block_issue.call_count,2); self.assertEqual(adapter.block_issue.call_args_list[0].args[:2],("demo",1))
+
     def test_reconcile_applies_once_and_failure_does_not_persist(self):
         rt,item=runtime(issues=(1,)),planned(); result=ActionResult("active",("task-1",))
         with patch.object(cli,"plan_once",return_value=item),patch.object(cli,"apply_plan",return_value=result) as apply,patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])

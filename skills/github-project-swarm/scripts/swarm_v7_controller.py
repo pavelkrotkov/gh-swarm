@@ -4,7 +4,7 @@
 # approval, merge completion, dependency release, or other semantic workflow state.
 from collections import namedtuple; from dataclasses import dataclass, replace
 from pathlib import Path; import time
-from swarm_v7 import Action, AdjudicationDecision, DependencyState, ExecutionState, ManifestV7, ReviewState, plan_issue; from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
+from swarm_v7 import Action, AdjudicationDecision, DependencyState, ExecutionState, ManifestV7, Phase, ReviewState, plan_issue; from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 from swarm_v7_github import GhReader, observe_issue as observe_github; from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
 from swarm_v7_merge import GhMerger, request_exact_head_merge; from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
 _CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
@@ -76,12 +76,13 @@ def _remember(runtime,results):
     return ActionResult("dispatched",tuple(tasks),", ".join(result.state.value for result in results))
 def _start_review(ctx,adjudicate):
     pr,target=_target(ctx); rows=() if pr.adjudication is None else (pr.adjudication,); key=semantic_key(ctx.runtime.config.swarm_id,target.issue,"adjudication",head=target.head) if adjudicate else None; attempts=_attempts(ctx.runtime,key,ctx.observed.execution.get(key,"")) if adjudicate else tuple(_attempts(ctx.runtime,key,ctx.observed.execution.get(key,"")) for slot in range(1,len(ctx.runtime.config.reviewer_models)+1) for key in (semantic_key(ctx.runtime.config.swarm_id,target.issue,"review",slot=slot,head=target.head),)); results=(reconcile_adjudication(ctx.runtime.config,target,pr.reviewers,rows,ctx.kanban,attempts),) if adjudicate else reconcile_reviewers(ctx.runtime.config,target,pr.reviewers,ctx.kanban,attempts); return _remember(ctx.runtime,results)
-def _merge_action(ctx,plan):
-    result=request_exact_head_merge(ctx.runtime.config,ctx.observed.github.issue_number,plan.pr_head or "",ctx.reader,ctx.merger); return ActionResult(result.state.value.lower(),detail=result.reason)
+def _merge_action(ctx,plan): result=request_exact_head_merge(ctx.runtime.config,ctx.observed.github.issue_number,plan.pr_head or "",ctx.reader,ctx.merger); return ActionResult(result.state.value.lower(),detail=result.reason)
 def _handlers(): return {Action.START_IMPLEMENTATION:lambda c,p:_worker(c,p,False),Action.START_REVISION:lambda c,p:_worker(c,p,True),Action.START_REVIEW:lambda c,p:_start_review(c,False),Action.START_ADJUDICATION:lambda c,p:_start_review(c,True),Action.MERGE:_merge_action}
 def _default(value,factory): return factory() if value is None else value
+def _terminal_action(runtime,planned,kanban): issue=planned.observation.github.issue_number; reason=f"stale/cancelled: source issue #{issue} is closed and its PR is merged"; tasks=_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)).block_issue(runtime.config.swarm_id,issue,reason); return ActionResult("cancelled" if tasks else "noop",tasks,reason)
+def _idle_action(runtime,planned,kanban): return _terminal_action(runtime,planned,kanban) if planned.plan.phase is Phase.MERGED and not runtime.config.paused else ActionResult("suppressed" if planned.plan.would_action else "noop",detail=_need(not planned.observation.planner.unsafe_reason,planned.observation.planner.unsafe_reason) or planned.plan.reason)
 def apply_plan(runtime,planned,*,reader=None,kanban=None,workspace=None,merger=None,executors=None):
-    if planned.plan.action is None: return ActionResult("suppressed" if planned.plan.would_action else "noop",detail=_need(not planned.observation.planner.unsafe_reason,planned.observation.planner.unsafe_reason) or planned.plan.reason)
+    if planned.plan.action is None: return _idle_action(runtime,planned,kanban)
     handler=_default(executors,_handlers).get(planned.plan.action)
     if handler is None: raise RuntimeError(f"no executor registered for planned action {planned.plan.action.value}")
     ctx=ExecutionContext(runtime,planned.observation,_default(reader,GhReader),_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),_default(workspace,lambda:GitWorkspace(runtime.repo_path)),_default(merger,GhMerger)); return handler(ctx,planned.plan)
