@@ -162,7 +162,8 @@ class Harness:
     def publish_review(self, pr: int, swarm: str, issue: int, head: str, slot: int = 1) -> None:
         marker = f"<!-- hermes-swarm-review:{swarm}:{issue}:v{slot}:{head} -->"
         self.mutate_fake(lambda data: data["prs"][str(pr)]["reviews"].append(
-            {"id": 1000 + len(data["prs"][str(pr)]["reviews"]), "commit_id": head, "body": marker}
+            {"id": 1000 + len(data["prs"][str(pr)]["reviews"]), "commit_id": head, "body": marker,
+             "state": "COMMENTED", "submitted_at": "2026-09-12T00:00:00Z"}
         ))
 
     def publish_adjudication(self, pr: int, swarm: str, issue: int, head: str) -> None:
