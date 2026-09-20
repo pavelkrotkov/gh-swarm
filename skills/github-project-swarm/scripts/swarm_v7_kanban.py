@@ -30,8 +30,7 @@ def _task(raw):
 # Run ordering is normalized before this check; CLI result order is not an execution contract.
 def _issue_task(row,issue): title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and title.startswith(("[implement]","[revise]","[review ","[adjudicate ")) and number==str(issue)
 def _running_run(status,runs): return runs[-1] if status=="running" and runs else {}
-def _run_state(status,runs):
-    run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds"); return (f"run_{run.get('outcome')}",Outcome.FAILURE) if ended is not None and now-ended>=_RETRY_GRACE_S else ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit+_RETRY_GRACE_S else (status,_STATUS[status])
+def _run_state(status,runs): run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds"); return (f"run_{run.get('outcome')}",Outcome.FAILURE) if ended is not None and now-ended>=_RETRY_GRACE_S else ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit+_RETRY_GRACE_S else (status,_STATUS[status])
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
     def _run(self,args): return self.runner(("hermes","kanban","--board",self.board,*args,"--json"),self.cwd,self.timeout_s)
