@@ -96,11 +96,16 @@ class LifecycleTests(unittest.TestCase):
         rt=runtime(issues=(1,)); item=PlannedIssue(IssueObservation(SimpleNamespace(issue_number=1),Observation(1,merged=True),{}),Plan(Phase.MERGED,None,"merged",None,None)); adapter=Mock(); adapter.block_issue.side_effect=(("task-1",),())
         first=apply_plan(rt,item,kanban=adapter); second=apply_plan(rt,item,kanban=adapter); self.assertEqual((first.outcome,first.task_ids,second.outcome),( "cancelled",("task-1",),"noop")); self.assertEqual(adapter.block_issue.call_count,2); self.assertEqual(adapter.block_issue.call_args_list[0].args[:2],("demo",1))
 
-    def test_reconcile_applies_once_and_failure_does_not_persist(self):
-        rt,item=runtime(issues=(1,)),planned(); result=ActionResult("active",("task-1",))
-        with patch.object(cli,"plan_once",return_value=item),patch.object(cli,"apply_plan",return_value=result) as apply,patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])
-        apply.assert_called_once_with(rt,item); save.assert_called_once_with(rt)
-        with patch.object(cli,"plan_once",return_value=item),patch.object(cli,"apply_plan",side_effect=RuntimeError("execution failed")),patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertIn("execution failed",cli.reconcile_runtime(rt)[0]); save.assert_not_called()
+    def test_reconcile_watchdog_precedes_plan_and_failure_does_not_persist(self):
+        rt,item=runtime(issues=(1,)),planned(); result=ActionResult("active",("task-1",)); adapter=Mock(); adapter.watchdog.return_value={}
+        def plan(*_): self.assertTrue(adapter.watchdog.called); return item
+        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli,"apply_plan",return_value=result) as apply,patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])
+        apply.assert_called_once_with(rt,item); save.assert_called_once_with(rt); adapter.watchdog.reset_mock()
+        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli,"apply_plan",side_effect=RuntimeError("execution failed")),patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertIn("execution failed",cli.reconcile_runtime(rt)[0]); save.assert_not_called()
+    def test_reconcile_lock_contention_fails_before_planning(self):
+        rt=runtime(issues=(1,)); adapter=Mock(); adapter.watchdog.return_value={"skipped_locked":True}
+        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once") as plan,self.assertRaisesRegex(RuntimeError,"dispatcher lock busy"): cli.reconcile_runtime(rt)
+        plan.assert_not_called()
     def test_paused_init_is_configuration_only(self):
         args=SimpleNamespace(repo="owner/repo",repo_path="/repo",issues="1",epic=None,name="demo",board=None,assignee="sat-swarm",worker="worker",reviewer=["r1","r2"],adjudicator=None,ci_mode="required",paused=True,max_execution_attempts=2,max_runtime="30m"); reader=Mock(); reader.get.side_effect=[{"number":1,"state":"open"},{"default_branch":"main"}]
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"GhReader",return_value=reader),patch.object(cli,"GitWorkspace") as workspace,patch.object(cli,"KanbanAdapter") as kanban,patch.object(cli,"save") as save:

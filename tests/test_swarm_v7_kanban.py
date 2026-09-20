@@ -24,6 +24,7 @@ class FakeHermes:
         if "--help" in cmd:
             if "create" in cmd: return "usage: create TITLE --body BODY --workspace WORKSPACE [--branch BRANCH] --idempotency-key KEY --max-retries N --max-runtime TIME [--assignee NAME] [--skill SKILL] --model MODEL [--provider PROVIDER]"
             if "block" in cmd: return "usage: block TASK REASON [--ids ID ...]"
+            if "dispatch" in cmd: return "usage: dispatch [--max N] [--json]"
             return "usage: command TASK"
         action = cmd[4]
         if action == "create":
@@ -36,6 +37,12 @@ class FakeHermes:
             ids=[cmd[5]]+(cmd[cmd.index("--ids")+1:] if "--ids" in cmd else [])
             for tid in ids: self.tasks[tid]["status"]="blocked"
             return ""
+        if action == "dispatch":
+            timed=[]
+            for tid,task in self.tasks.items():
+                if task.pop("expire_on_dispatch",False):
+                    run=task["runs"][-1]; limit=run["max_runtime_seconds"]; run.update(status="timed_out",outcome="timed_out",ended_at=run["started_at"]+limit+8,metadata={"elapsed_seconds":limit+8,"limit_seconds":limit}); task.update(status="ready",worker_pid=None,claim_lock=None); timed.append(tid)
+            return json.dumps({"timed_out":timed,"skipped_locked":False})
         tid = cmd[5]
         if action == "show": return json.dumps({"task": self.tasks[tid]})
         if action == "runs": return json.dumps({"runs": self.tasks[tid]["runs"]})
@@ -81,6 +88,9 @@ class ContractTests(unittest.TestCase):
         with patch.object(kb.time,"time",return_value=141): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
         with patch.object(kb.time,"time",return_value=260): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("timed_out",kb.Outcome.FAILURE))
+    def test_watchdog_reclaims_hung_adjudicator_without_duplicate_dispatch(self):
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task=adapter.create(spec(title="[adjudicate c4d61e5a] #58"),"semantic"); run={"id":104,"started_at":8,"ended_at":None,"status":"running","outcome":None,"max_runtime_seconds":1800}; fake.tasks[task].update(status="running",worker_pid=2928396,claim_lock="host:claim",expire_on_dispatch=True,runs=[run]); result=adapter.watchdog()
+        self.assertEqual(result["timed_out"],[task]); self.assertEqual((fake.tasks[task]["status"],fake.tasks[task]["worker_pid"],fake.tasks[task]["claim_lock"]),("ready",None,None)); self.assertEqual((run["status"],run["outcome"],run["ended_at"],run["metadata"]),( "timed_out","timed_out",1816,{"elapsed_seconds":1808,"limit_seconds":1800})); self.assertEqual(len(fake.tasks),1); self.assertIn(["hermes","kanban","--board","board","dispatch","--max","0","--json"],[row[0] for row in fake.calls])
     def test_live_create_prepares_headless_worker_for_agents_md_and_github_auth(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); hermes=root/"hermes"; profile=hermes/"profiles"/"swarm-worker"; config=root/"gh"; profile.mkdir(parents=True); config.mkdir(); (config/"hosts.yml").write_text("oauth_token: secret\n"); (profile/".env").write_text("API_KEY=keep\nGH_CONFIG_DIR=/old\n")
@@ -90,7 +100,7 @@ class ContractTests(unittest.TestCase):
             with patch.dict(os.environ,{"HERMES_HOME":str(hermes),"GH_CONFIG_DIR":str(config)},clear=False),patch("swarm_v7_cli_process.subprocess.run") as auth,patch.object(kb,"run_command") as run,self.assertRaisesRegex(RuntimeError,"gh auth login"): kb.KanbanAdapter("board").create(spec(),"blocked")
             auth.assert_not_called(); run.assert_not_called()
     def test_probe_records_version_and_checks_used_command_surface(self):
-        fake = FakeHermes(); adapter = kb.KanbanAdapter("__contract_probe__", runner=fake); self.assertEqual(adapter.probe_contract(), "Hermes 0.test"); calls = [row[0] for row in fake.calls]; self.assertIn(["hermes", "kanban", "boards", "list", "--json"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "create", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "show", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "list", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "block", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "list", "--json"], calls)
+        fake = FakeHermes(); adapter = kb.KanbanAdapter("__contract_probe__", runner=fake); self.assertEqual(adapter.probe_contract(), "Hermes 0.test"); calls = [row[0] for row in fake.calls]; self.assertIn(["hermes", "kanban", "boards", "list", "--json"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "create", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "show", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "list", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "block", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "dispatch", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "default", "list", "--json"], calls)
         fake.tasks["bad"]={"title":"malformed"}
         with self.assertRaisesRegex(kb.KanbanExecutionError,"missing id"): adapter.probe_contract()
     def test_invalid_dir_workspace_branch_is_rejected_before_hermes(self):
