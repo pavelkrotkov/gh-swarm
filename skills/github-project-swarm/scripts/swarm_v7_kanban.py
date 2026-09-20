@@ -30,7 +30,7 @@ def _task(raw):
 # Run ordering is normalized before this check; CLI result order is not an execution contract.
 # Terminal cleanup blocks matching active cards instead of archiving/deleting them.
 # Blocked cards preserve task/run evidence and repeated cleanup becomes a no-op.
-def _issue_task(row,issue): title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and title.startswith(("[implement]","[revise]","[review ","[adjudicate ")) and number==str(issue)
+def _issue_task(row,swarm,issue): title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; body=str(row.get("body") or ""); owned=any(map(body.__contains__,(f"Expected branch: swarm/{swarm}/{issue}\n",f"hermes-swarm-review:{swarm}:{issue}:",f"hermes-swarm-adjudication:{swarm}:{issue}:"))); return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and title.startswith(("[implement]","[revise]","[review ","[adjudicate ")) and number==str(issue) and owned
 def _running_run(status,runs): return runs[-1] if status=="running" and runs else {}
 def _run_state(status,runs): run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds"); return (f"run_{run.get('outcome')}",Outcome.FAILURE) if ended is not None and now-ended>=_RETRY_GRACE_S else ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit+_RETRY_GRACE_S else (status,_STATUS[status])
 class KanbanAdapter:
@@ -40,9 +40,11 @@ class KanbanAdapter:
     def create(self,spec,key,attempt=1):
         if self.live: ensure_worker_github_auth(spec.assignee); run_command(("hermes","-p",spec.assignee,"config","set","security.protected_instruction_files","false"),self.cwd,timeout=self.timeout_s)
         return _task(json.loads(self._run(create_args(spec,key,attempt)) or "{}"))[1]
-    def block_issue(self,issue,reason): ids=tuple(task for raw in json.loads(self._run(("list",)) or "[]") for row,task in (_task(raw),) if _issue_task(row,issue)); ids and self.runner(("hermes","kanban","--board",self.board,"block",ids[0],reason)+(( "--ids",*ids[1:]) if len(ids)>1 else ()),self.cwd,self.timeout_s); return ids
+    def block_issue(self,swarm,issue,reason): ids=tuple(task for raw in json.loads(self._run(("list",)) or "[]") for row,task in (_task(raw),) if _issue_task(row,swarm,issue)); ids and self.runner(("hermes","kanban","--board",self.board,"block",ids[0],reason)+(( "--ids",*ids[1:]) if len(ids)>1 else ()),self.cwd,self.timeout_s); return ids
     def observe(self,task_id): row,observed=_task(json.loads(self._run(("show",task_id)) or "{}")); status=str(row.get("status") or "").strip().lower(); runs=json.loads(self._run(("runs",task_id)) or "[]"); runs=runs.get("runs",runs.get("task_runs",())) if isinstance(runs,dict) else runs; runs.sort(key=lambda row:(row.get("started_at") or 0,int(row.get("id") or 0))); status,outcome=_run_state(status,runs); return TaskFacts(observed,status,outcome,row,bool(runs))
     def probe_contract(self):
-        prefix=("hermes","kanban","--board",self.board); version=self.runner(("hermes","--version"),self.cwd,self.timeout_s).strip(); self.runner(("hermes","kanban","boards","list","--json"),self.cwd,self.timeout_s); help_text=self.runner((*prefix,"create","--help"),self.cwd,self.timeout_s); self.runner((*prefix,"show","--help"),self.cwd,self.timeout_s)
-        if missing:=[flag for flag in _REQUIRED if flag not in help_text]: raise KanbanExecutionError(f"Hermes Kanban create contract missing: {', '.join(missing)}")
+        prefix=("hermes","kanban","--board",self.board); version=self.runner(("hermes","--version"),self.cwd,self.timeout_s).strip(); self.runner(("hermes","kanban","boards","list","--json"),self.cwd,self.timeout_s); create_help=self.runner((*prefix,"create","--help"),self.cwd,self.timeout_s); self.runner((*prefix,"show","--help"),self.cwd,self.timeout_s); self.runner((*prefix,"list","--help"),self.cwd,self.timeout_s); block_help=self.runner((*prefix,"block","--help"),self.cwd,self.timeout_s); rows=json.loads(self._run(("list",)) or "[]")
+        if not isinstance(rows,list): raise KanbanExecutionError("Hermes Kanban list contract must return a JSON array")
+        tuple(map(_task,rows))
+        if missing:=[flag for text,flags in ((create_help,_REQUIRED),(block_help,("--ids",))) for flag in flags if flag not in text]: raise KanbanExecutionError(f"Hermes Kanban command contract missing: {', '.join(missing)}")
         return version
