@@ -26,6 +26,9 @@ def nested_text(row,key,child):
     return value
 def native_head(row,head):
     if (value:=row.get("commit_id")) is not None and exact_sha(str(value).lower())!=head: raise UnsafeGitHubObservation(f"native GitHub commit_id does not match claimed head {head}")
+def native_review(row,head):
+    if not all((row.get("commit_id"),str(row.get("state") or "").upper()=="COMMENTED",row.get("submitted_at"))): raise UnsafeGitHubObservation("review publication must be a submitted COMMENT review bound to the exact head")
+    native_head(row,head)
 class GhReader:
     def __init__(self,timeout_s=30.0):
         if timeout_s<=0: raise ValueError("timeout_s must be positive")
@@ -59,7 +62,7 @@ def _review_row(config,issue,head,row,found):
     prefix=f"<!-- hermes-swarm-review:{config.swarm_id}:{issue}:"
     for match in _scoped(str(row.get("body") or ""),_REVIEW,prefix,config.swarm_id,issue,"review"):
         if match.group("head")!=head: continue
-        slot=int(match.group("slot")); native_head(row,head)
+        slot=int(match.group("slot")); native_review(row,head)
         if slot<1 or slot>len(config.reviewer_models): raise UnsafeGitHubObservation(f"unexpected reviewer slot {slot}")
         if slot in found: raise UnsafeGitHubObservation(f"duplicate reviewer publication for slot {slot} and head {head}")
         found[slot]=ReviewerPublication(slot,head)
