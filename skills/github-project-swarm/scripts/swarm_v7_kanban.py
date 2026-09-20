@@ -8,7 +8,7 @@ from swarm_v7_github import exact_sha
 # and exact-head scoped for review/adjudication/revision. Task success is liveness,
 # never GitHub workflow completion.
 TaskSpec=namedtuple("TaskSpec","title body workspace model assignee provider skills branch max_retries max_runtime",defaults=(None,(),None,1,"30m")); Outcome=Enum("Outcome",{name:name.lower() for name in "ACTIVE SUCCESS FAILURE".split()},type=str); TaskFacts=namedtuple("TaskFacts","task_id status outcome raw has_run",defaults=(True,))
-_STATUS={**{name:Outcome.ACTIVE for name in ("todo","ready","running","review")},"done":Outcome.SUCCESS,**{name:Outcome.FAILURE for name in ("blocked","archived","triage")}}; _RETRY_GRACE_S=120; _REQUIRED=("--body","--workspace","--branch","--idempotency-key","--max-retries","--max-runtime","--assignee","--skill","--model","--provider"); _TEMPLATE=(Path(__file__).resolve().parents[1]/"references"/"swarm_v7_worker_runtime.txt").read_text(encoding="utf-8"); KanbanExecutionError=RuntimeError
+_STATUS={**{name:Outcome.ACTIVE for name in ("todo","ready","running","review")},"done":Outcome.SUCCESS,**{name:Outcome.FAILURE for name in ("blocked","archived","triage")}}; _REQUIRED=("--body","--workspace","--branch","--idempotency-key","--max-retries","--max-runtime","--assignee","--skill","--model","--provider"); _TEMPLATE=(Path(__file__).resolve().parents[1]/"references"/"swarm_v7_worker_runtime.txt").read_text(encoding="utf-8"); KanbanExecutionError=RuntimeError
 def attempt_key(key,attempt=1):
     if not key or attempt<1: raise ValueError("semantic key is required and attempt must be positive")
     return key if attempt==1 else f"{key}:a{attempt}"
