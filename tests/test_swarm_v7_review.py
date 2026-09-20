@@ -119,7 +119,7 @@ class ContractTests(unittest.TestCase):
     def test_adjudicator_has_headless_safe_decode_and_fail_fast_contract(self):
         skill=(SCRIPTS.parents[1]/"github-project-adjudicator"/"SKILL.md").read_text(); body=rx.adjudicator_task_spec(config(),target()).body; contract="If command safety blocks a required verification command, fail the execution attempt immediately"
         for text in (skill,body): text=" ".join(text.split()); self.assertIn("inline interpreter scripts",text); self.assertIn(contract,text); self.assertIn("heartbeat",text.lower())
-        commands=[line.strip("`") for line in body.splitlines() if line.startswith("`gh api ")]; self.assertEqual(len(commands),1); self.assertIn("| base64 -d | jq -e .",commands[0]); self.assertNotRegex(commands[0],r"\b(?:python|node|perl|ruby)\b")
+        commands=[line.strip("`") for line in body.splitlines() if line.startswith("`gh api ")]; self.assertEqual(len(commands),1); self.assertIn("| base64 -d | jq -e .",commands[0]); self.assertNotRegex(commands[0],r"\b(?:python|node|perl|ruby)\w*")
 
 
 if __name__ == "__main__": unittest.main()
