@@ -30,6 +30,7 @@ def _task(raw):
 # Run ordering is normalized before this check; CLI result order is not an execution contract.
 # Terminal cleanup blocks matching active cards instead of archiving/deleting them.
 # Blocked cards preserve task/run evidence and repeated cleanup becomes a no-op.
+# Board names and issue numbers can collide; branch/publication markers bind cards to one swarm.
 def _issue_task(row,swarm,issue): title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; body=str(row.get("body") or ""); owned=any(map(body.__contains__,(f"Expected branch: swarm/{swarm}/{issue}\n",f"hermes-swarm-review:{swarm}:{issue}:",f"hermes-swarm-adjudication:{swarm}:{issue}:"))); return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and title.startswith(("[implement]","[revise]","[review ","[adjudicate ")) and number==str(issue) and owned
 def _running_run(status,runs): return runs[-1] if status=="running" and runs else {}
 def _run_state(status,runs): run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds"); return (f"run_{run.get('outcome')}",Outcome.FAILURE) if ended is not None and now-ended>=_RETRY_GRACE_S else ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit+_RETRY_GRACE_S else (status,_STATUS[status])
