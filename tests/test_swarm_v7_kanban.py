@@ -23,12 +23,13 @@ class FakeHermes:
         if cmd == ["hermes", "kanban", "boards", "list", "--json"]: return "[]"
         if "--help" in cmd:
             if "create" in cmd: return "usage: create TITLE --body BODY --workspace WORKSPACE [--branch BRANCH] --idempotency-key KEY --max-retries N --max-runtime TIME [--assignee NAME] [--skill SKILL] --model MODEL [--provider PROVIDER]"
+            if "block" in cmd: return "usage: block TASK REASON [--ids ID ...]"
             return "usage: command TASK"
         action = cmd[4]
         if action == "create":
             key = cmd[cmd.index("--idempotency-key") + 1]
             if key not in self.by_key:
-                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "title": cmd[5], "status": "todo", "runs": []}
+                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "title": cmd[5], "body":cmd[cmd.index("--body")+1], "status": "todo", "runs": []}
             return json.dumps({"task": self.tasks[self.by_key[key]]})
         if action == "list": return json.dumps(list(self.tasks.values()))
         if action == "block":
@@ -63,9 +64,9 @@ class ContractTests(unittest.TestCase):
         fake.tasks[task_id]["status"] = "cancelled"
         with self.assertRaises(KeyError): adapter.observe(task_id)
     def test_terminal_issue_cleanup_blocks_only_active_swarm_cards_and_is_idempotent(self):
-        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); stale=adapter.create(spec(title="[revise] #57"),"stale"); review=adapter.create(spec(title="[review abcdef12] #57 reviewer 1"),"review"); done=adapter.create(spec(title="[adjudicate abcdef12] #57"),"done"); other=adapter.create(spec(title="[revise] #58"),"other")
-        for tid in (stale,review,other): fake.tasks[tid]["status"]="ready"; fake.tasks[tid]["assignee"]=None
-        fake.tasks[done]["status"]="done"; self.assertEqual(adapter.block_issue(57,"stale/cancelled"),(stale,review)); self.assertEqual((fake.tasks[stale]["status"],fake.tasks[review]["status"],fake.tasks[done]["status"],fake.tasks[other]["status"]),("blocked","blocked","done","ready")); self.assertEqual(adapter.block_issue(57,"stale/cancelled"),())
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); stale=adapter.create(spec(title="[revise] #57",body="Expected branch: swarm/s/57\n"),"stale"); review=adapter.create(spec(title="[review abcdef12] #57 reviewer 1",body="<!-- hermes-swarm-review:s:57:v1:head -->"),"review"); done=adapter.create(spec(title="[adjudicate abcdef12] #57",body="<!-- hermes-swarm-adjudication:s:57:head -->"),"done"); collision=adapter.create(spec(title="[revise] #57",body="Expected branch: swarm/other/57\n"),"collision"); other=adapter.create(spec(title="[revise] #58",body="Expected branch: swarm/s/58\n"),"other")
+        for tid in (stale,review,collision,other): fake.tasks[tid]["status"]="ready"; fake.tasks[tid]["assignee"]=None
+        fake.tasks[done]["status"]="done"; self.assertEqual(adapter.block_issue("s",57,"stale/cancelled"),(stale,review)); self.assertEqual((fake.tasks[stale]["status"],fake.tasks[review]["status"],fake.tasks[done]["status"],fake.tasks[collision]["status"],fake.tasks[other]["status"]),("blocked","blocked","done","ready","ready")); self.assertEqual(adapter.block_issue("s",57,"stale/cancelled"),())
 
     def test_assignee_and_run_record_are_execution_contract(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({}); self.assertTrue(adapter.observe(task_id).has_run)
@@ -89,7 +90,9 @@ class ContractTests(unittest.TestCase):
             with patch.dict(os.environ,{"HERMES_HOME":str(hermes),"GH_CONFIG_DIR":str(config)},clear=False),patch("swarm_v7_cli_process.subprocess.run") as auth,patch.object(kb,"run_command") as run,self.assertRaisesRegex(RuntimeError,"gh auth login"): kb.KanbanAdapter("board").create(spec(),"blocked")
             auth.assert_not_called(); run.assert_not_called()
     def test_probe_records_version_and_checks_used_command_surface(self):
-        fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); self.assertEqual(adapter.probe_contract(), "Hermes 0.test"); calls = [row[0] for row in fake.calls]; self.assertIn(["hermes", "kanban", "boards", "list", "--json"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "create", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "show", "--help"], calls)
+        fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake); self.assertEqual(adapter.probe_contract(), "Hermes 0.test"); calls = [row[0] for row in fake.calls]; self.assertIn(["hermes", "kanban", "boards", "list", "--json"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "create", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "show", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "list", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "block", "--help"], calls); self.assertIn(["hermes", "kanban", "--board", "board", "list", "--json"], calls)
+        fake.tasks["bad"]={"title":"malformed"}
+        with self.assertRaisesRegex(kb.KanbanExecutionError,"missing id"): adapter.probe_contract()
     def test_invalid_dir_workspace_branch_is_rejected_before_hermes(self):
         fake = FakeHermes(); adapter = kb.KanbanAdapter("board", runner=fake)
         with self.assertRaises(ValueError): adapter.create(spec(branch="feature"), "semantic")
