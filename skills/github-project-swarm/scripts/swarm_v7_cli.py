@@ -21,8 +21,7 @@ def manifest_path(swarm_id): return STATE/f"{swarm_id}.json"
 def manifests(): STATE.mkdir(parents=True,exist_ok=True); return sorted(STATE.glob("*.json"))
 def selected(*,name=None,all_swarms=False):
     if name:
-        path=manifest_path(name)
-        if not path.exists(): raise RuntimeError(f"unknown swarm {name}")
+        if not (path:=manifest_path(name)).exists(): raise RuntimeError(f"unknown swarm {name}")
         return [path]
     if len(paths:=manifests())==1 or all_swarms: return paths
     raise RuntimeError("Specify --name or --all")
