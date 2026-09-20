@@ -34,6 +34,8 @@ def review(slot, head=H1, *, native=None):
         "id": 100 + slot,
         "body": gh.review_marker("test", 50, slot, head),
         "commit_id": native if native is not None else head,
+        "state": "COMMENTED",
+        "submitted_at": "2026-09-12T00:00:00Z",
     }
 
 
