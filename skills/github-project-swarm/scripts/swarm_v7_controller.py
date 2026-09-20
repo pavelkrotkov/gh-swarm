@@ -21,13 +21,14 @@ class RuntimeManifest:
     def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
 def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and ((age:=time.time()-float(cursor.get("created_at") or 0))<0 or age>=_STARTUP_GRACE_S)
+def _attempts(runtime,key,status=""): _need(runtime.max_attempts>0,"max_execution_attempts must be positive"); cursor=runtime.cursors.get(key); used=int(cursor.get("attempt") or 0) if isinstance(cursor,dict) else 0; return range(max(1,used),max(runtime.max_attempts,used+(1 if status.startswith("blocked:") else 0))+1)
 def _slot(runtime,key,kanban,execution):
     cursor=runtime.cursors.get(key)
     if not isinstance(cursor,dict) or not cursor.get("task_id"): return ExecutionState.IDLE,None
     attempt=int(cursor.get("attempt") or 1); facts=kanban.observe(str(cursor["task_id"])); execution[key]=f"{facts.status}:a{attempt}"
     if _starved(facts,cursor): return ExecutionState.FAILED,f"execution task {facts.task_id} has no worker run after {_STARTUP_GRACE_S}s startup grace"
     if facts.outcome in {Outcome.ACTIVE,Outcome.SUCCESS}: return {Outcome.ACTIVE:ExecutionState.RUNNING,Outcome.SUCCESS:ExecutionState.IDLE}[facts.outcome],None
-    return (ExecutionState.FAILED,f"execution attempts exhausted for {key}") if attempt>=runtime.max_attempts else (ExecutionState.IDLE,None)
+    return (ExecutionState.FAILED,f"execution attempts exhausted for {key}") if all((attempt>=runtime.max_attempts,facts.status!="blocked")) else (ExecutionState.IDLE,None)
 def _reviews(runtime,github,kanban,execution):
     pr=github.pull_request; present=set(map(lambda row:row.slot,pr.reviewers)); missing=set(range(1,len(runtime.config.reviewer_models)+1))-present
     if not missing: return ReviewState.DISPUTED,None
@@ -56,8 +57,7 @@ def plan_payload(plan): return {"phase":plan.phase.value,"action":plan.action.va
 def observation_payload(observed):
     pr=observed.github.pull_request; pull=None if pr is None else {"number":pr.number,"url":pr.url,"head":pr.head,"base":pr.base,"state":pr.state,"draft":pr.draft,"merged_at":pr.merged_at}; return {"issue_state":observed.github.issue_state,"blockers":[{"issue":row.issue_number,"state":row.state,"internal":row.internal,"merged_at":row.merged_at} for row in observed.github.blockers],"pr":pull,"execution":dict(observed.execution),"base_current":observed.planner.base_current,"unsafe_reason":observed.planner.unsafe_reason}
 def dispatch_attempts(runtime,adapter,key,spec):
-    _need(runtime.max_attempts>0,"max_execution_attempts must be positive")
-    for attempt in range(1,runtime.max_attempts+1):
+    for attempt in _attempts(runtime,key,"blocked:"):
         task=adapter.create(spec,key,attempt); runtime.cursors[key]={"task_id":task,"attempt":attempt,"created_at":time.time()}; facts=adapter.observe(task)
         if facts.outcome is not Outcome.FAILURE: return ActionResult(facts.outcome.value,(task,),f"attempt {attempt}: {facts.status}")
     return ActionResult("exhausted",(task,),"bounded execution attempts exhausted")
@@ -75,7 +75,7 @@ def _remember(runtime,results):
         if result.task_id and result.attempt: runtime.cursors[result.semantic_key]={"task_id":result.task_id,"attempt":result.attempt,"created_at":time.time()}; tasks.append(result.task_id)
     return ActionResult("dispatched",tuple(tasks),", ".join(result.state.value for result in results))
 def _start_review(ctx,adjudicate):
-    pr,target=_target(ctx); rows=() if pr.adjudication is None else (pr.adjudication,); results=(reconcile_adjudication(ctx.runtime.config,target,pr.reviewers,rows,ctx.kanban,ctx.runtime.max_attempts),) if adjudicate else reconcile_reviewers(ctx.runtime.config,target,pr.reviewers,ctx.kanban,ctx.runtime.max_attempts); return _remember(ctx.runtime,results)
+    pr,target=_target(ctx); rows=() if pr.adjudication is None else (pr.adjudication,); key=semantic_key(ctx.runtime.config.swarm_id,target.issue,"adjudication",head=target.head) if adjudicate else None; attempts=_attempts(ctx.runtime,key,ctx.observed.execution.get(key,"")) if adjudicate else tuple(_attempts(ctx.runtime,key,ctx.observed.execution.get(key,"")) for slot in range(1,len(ctx.runtime.config.reviewer_models)+1) for key in (semantic_key(ctx.runtime.config.swarm_id,target.issue,"review",slot=slot,head=target.head),)); results=(reconcile_adjudication(ctx.runtime.config,target,pr.reviewers,rows,ctx.kanban,attempts),) if adjudicate else reconcile_reviewers(ctx.runtime.config,target,pr.reviewers,ctx.kanban,attempts); return _remember(ctx.runtime,results)
 def _merge_action(ctx,plan):
     result=request_exact_head_merge(ctx.runtime.config,ctx.observed.github.issue_number,plan.pr_head or "",ctx.reader,ctx.merger); return ActionResult(result.state.value.lower(),detail=result.reason)
 def _handlers(): return {Action.START_IMPLEMENTATION:lambda c,p:_worker(c,p,False),Action.START_REVISION:lambda c,p:_worker(c,p,True),Action.START_REVIEW:lambda c,p:_start_review(c,False),Action.START_ADJUDICATION:lambda c,p:_start_review(c,True),Action.MERGE:_merge_action}

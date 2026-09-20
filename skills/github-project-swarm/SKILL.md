@@ -60,6 +60,6 @@ hermes swarm resume --name <swarm>
 
 Dry-run, explain, logging, and real reconcile use the same v7 plan. Dry-run/explain re-read GitHub and execution evidence but never save, dispatch, publish, or merge. Real reconciliation applies at most one planned action per issue.
 
-Recovery is artifact-first and bounded: implementation uses git/PR evidence; reviewer/adjudicator recovery uses exact-head GitHub publications and idempotent Kanban keys. Exhausted attempts become fail-closed `EXECUTION_STALLED`. A newly created ACTIVE task may remain `RUNNING` without a worker run for up to the persisted 300-second startup grace; after that it fails closed, and missing/future creation timestamps fail closed immediately.
+Recovery is artifact-first and bounded per reconcile: implementation uses git/PR evidence; reviewer/adjudicator recovery uses exact-head GitHub publications and idempotent Kanban keys. Blocked attempts keep their immutable keys; later reconciles advance to the next `:aN` key, one fresh attempt after the configured initial bound, so transient provider failures can recover without operator state edits. Archived/triage failures still fail closed. A newly created ACTIVE task may remain `RUNNING` without a worker run for up to the persisted 300-second startup grace; after that it fails closed, and missing/future creation timestamps fail closed immediately.
 
 The active implementation is `scripts/swarm_v7_cli.py` plus `swarm_v7*.py`. Historical schema-5/6 documents do not authorize the live runtime.
