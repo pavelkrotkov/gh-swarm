@@ -67,7 +67,8 @@ class ContractTests(unittest.TestCase):
         with patch.object(kb.time,"time",return_value=126): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
         with patch.object(kb.time,"time",return_value=246): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("run_completed",kb.Outcome.FAILURE)); fake.tasks[task_id]["runs"]=[active]
-        with patch.object(kb.time,"time",return_value=141): facts=adapter.observe(task_id)
+        with patch.object(kb.time,"time",return_value=141): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
+        with patch.object(kb.time,"time",return_value=260): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("timed_out",kb.Outcome.FAILURE))
     def test_live_create_prepares_headless_worker_for_agents_md_and_github_auth(self):
         with tempfile.TemporaryDirectory() as td:
