@@ -34,6 +34,11 @@ class MigrationTests(unittest.TestCase):
         def fake_run(*args,**kwargs): commands.append(args); return SimpleNamespace(stdout="",stderr="",returncode=0)
         with patch.object(migration,"preflight",side_effect=(report(),final)),patch.object(migration,"run",side_effect=fake_run),patch.object(migration,"wait_inactive"),patch.object(migration,"backup",return_value=Path("/backup")),patch.object(migration,"safe_dry_run",return_value=[]),patch.object(migration,"journal_offset",return_value=0),patch.object(migration,"new_journal",return_value=[{"issue":1,"action":None,"outcome":"noop"}]),patch.object(migration,"verify_no_duplicates",return_value={"active_tasks":0,"merge_requests":0}),patch.object(migration,"unit_state",return_value={"active":"inactive","enabled":"disabled"}): got=migration.migrate("demo","automatic",5)
         self.assertIn(("hermes","swarm","merge-policy","--name","demo","automatic"),commands); self.assertIn(("hermes","swarm","validate","--name","demo"),commands); self.assertIn(("hermes","swarm","resume","--name","demo"),commands); self.assertIn(("hermes","swarm","reconcile","--name","demo"),commands); self.assertIn(("hermes","swarm","activate"),commands); self.assertEqual(got["backup"],"/backup")
+    def test_journal_slice_uses_byte_offset_with_utf8_history(self):
+        with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,{"HERMES_SWARM_STATE_DIR":td}):
+            path=Path(td,"demo.journal.jsonl"); path.write_text(json.dumps({"detail":"café"},ensure_ascii=False)+"\\n",encoding="utf-8"); offset=path.stat().st_size
+            with open(path,"a",encoding="utf-8") as out: out.write(json.dumps({"issue":1,"intent_key":"new"})+"\\n")
+            self.assertEqual(migration.new_journal("demo",offset),[{"issue":1,"intent_key":"new"}])
     def test_duplicate_proof_rejects_worker_and_merge_replays(self):
         rows=[{"action":"merge","outcome":"requested","intent_key":"m1"},{"action":"merge","outcome":"requested","intent_key":"m1"}]
         with patch.object(migration,"active_tasks",return_value=[{"idempotency_key":"t1"},{"idempotency_key":"t1"}]):

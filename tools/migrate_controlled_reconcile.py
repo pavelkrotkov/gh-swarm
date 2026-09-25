@@ -57,7 +57,7 @@ def journal_offset(name):
 def new_journal(name,offset):
     path=state_dir()/f"{name}.journal.jsonl"
     if not path.exists(): return []
-    with open(path,"r",encoding="utf-8") as handle: handle.seek(offset); return [json.loads(line) for line in handle if line.strip()]
+    with open(path,"rb") as handle: handle.seek(offset); return [json.loads(line) for line in handle if line.strip()]
 def _dupes(values): return [key for key,count in Counter(values).items() if count>1]
 def _task_evidence(board):
     tasks=active_tasks(board); missing=[str(row.get("id") or row.get("task_id") or "?") for row in tasks if not row.get("idempotency_key")]; return tasks,missing,_dupes([row.get("idempotency_key") for row in tasks if row.get("idempotency_key")])
