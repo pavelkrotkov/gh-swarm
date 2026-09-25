@@ -15,7 +15,7 @@ SPEC.loader.exec_module(plugin)
 
 COMMANDS = {
     "init", "status", "reconcile", "pause", "resume", "doctor", "validate",
-    "explain", "prepare", "activate", "disable",
+    "explain", "retire", "prepare", "activate", "disable",
 }
 
 

@@ -2,7 +2,7 @@
 # GitHub owns semantic truth; cursors identify attempts only and are re-observed after restart.
 # Execution may prepare worktrees or launch bounded tasks, but completion never becomes
 # approval, merge completion, dependency release, or other semantic workflow state.
-from collections import namedtuple; from dataclasses import dataclass, replace
+from collections import namedtuple; from dataclasses import dataclass, field, replace
 from pathlib import Path; import time
 from swarm_v7 import Action, AdjudicationDecision, DependencyState, ExecutionState, ManifestV7, Phase, ReviewState, plan_issue; from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 from swarm_v7_github import GhReader, observe_issue as observe_github; from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
@@ -10,15 +10,15 @@ from swarm_v7_merge import GhMerger, request_exact_head_merge; from swarm_v7_rev
 _CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
 def _need(ok,message):
     if not ok: raise ValueError(message)
+def _retired(value): _need(isinstance(value,dict),"retired_issues must be a mapping"); _need(all(str(issue).isdigit() and int(issue)>0 and isinstance(reason,str) and bool(reason.strip()) for issue,reason in value.items()),"retired_issues must map positive issue numbers to non-empty reasons"); return {str(issue):reason for issue,reason in value.items()}
 def _runtime_values(data):
-    rt=data.get("runtime"); _need(isinstance(rt,dict),"schema-7 runtime configuration is missing"); repo_path,board,assignee=(str(rt.get(key) or "").strip() for key in ("repo_path","board","assignee")); attempts=int(rt.get("max_execution_attempts",2)); cursors=rt.get("execution_cursors",{}); runtime=str(rt.get("max_runtime","30m")).strip(); _need(bool(repo_path and board and assignee),"invalid schema-7 runtime configuration: repo_path/board/assignee is required"); _need(attempts>0,"invalid schema-7 runtime configuration: max_execution_attempts must be positive"); _need(isinstance(cursors,dict),"execution_cursors must be a mapping"); _need(bool(runtime),"invalid schema-7 runtime configuration: max_runtime is required"); return repo_path,board,assignee,attempts,runtime,dict(cursors)
+    rt=data.get("runtime"); _need(isinstance(rt,dict),"schema-7 runtime configuration is missing"); repo_path,board,assignee=(str(rt.get(key) or "").strip() for key in ("repo_path","board","assignee")); attempts=int(rt.get("max_execution_attempts",2)); cursors=rt.get("execution_cursors",{}); runtime=str(rt.get("max_runtime","30m")).strip(); retired=_retired(rt.get("retired_issues",{})); _need(bool(repo_path and board and assignee),"invalid schema-7 runtime configuration: repo_path/board/assignee is required"); _need(attempts>0,"invalid schema-7 runtime configuration: max_execution_attempts must be positive"); _need(isinstance(cursors,dict),"execution_cursors must be a mapping"); _need(bool(runtime),"invalid schema-7 runtime configuration: max_runtime is required"); return repo_path,board,assignee,attempts,runtime,dict(cursors),retired
 @dataclass
 class RuntimeManifest:
-    config:ManifestV7; repo_path:str; board:str; assignee:str; max_attempts:int; max_runtime:str; cursors:dict
+    config:ManifestV7; repo_path:str; board:str; assignee:str; max_attempts:int; max_runtime:str; cursors:dict; retired_issues:dict=field(default_factory=dict)
     @classmethod
-    def from_dict(cls,raw):
-        data=dict(raw); _need(data.get("schema")==7,f"unsupported swarm schema {data.get('schema')!r}; v7 does not migrate schema 5/6 manifests; initialize a fresh schema-7 swarm"); bad=set(data)-(_CONFIG|{"runtime"}); _need(not bad,f"schema-7 runtime manifest forbids legacy/unknown fields: {sorted(bad)}"); return cls(ManifestV7.from_dict({key:data[key] for key in _CONFIG if key in data}),*_runtime_values(data))
-    def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors}}
+    def from_dict(cls,raw): data=dict(raw); _need(data.get("schema")==7,f"unsupported swarm schema {data.get('schema')!r}; v7 does not migrate schema 5/6 manifests; initialize a fresh schema-7 swarm"); bad=set(data)-(_CONFIG|{"runtime"}); _need(not bad,f"schema-7 runtime manifest forbids legacy/unknown fields: {sorted(bad)}"); return cls(ManifestV7.from_dict({key:data[key] for key in _CONFIG if key in data}),*_runtime_values(data))
+    def to_dict(self): return {**self.config.to_dict(),"runtime":{"repo_path":self.repo_path,"board":self.board,"assignee":self.assignee,"max_execution_attempts":self.max_attempts,"max_runtime":self.max_runtime,"execution_cursors":self.cursors,"retired_issues":self.retired_issues}}
 IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
 def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and ((age:=time.time()-float(cursor.get("created_at") or 0))<0 or age>=_STARTUP_GRACE_S)
 def _attempts(runtime,key,status=""): _need(runtime.max_attempts>0,"max_execution_attempts must be positive"); cursor=runtime.cursors.get(key); used=int(cursor.get("attempt") or 0) if isinstance(cursor,dict) else 0; return range(max(1,used),max(runtime.max_attempts,used+(1 if status.startswith("blocked:") else 0))+1)
@@ -46,17 +46,15 @@ def _base_current(runtime,github,workspace):
     if (pr:=github.pull_request) is None or github.planner.dependency is not DependencyState.READY: return True
     workspace.validate_binding(runtime.config.repo); default=workspace.refresh(runtime.config.default_branch,branch_name(runtime.config.swarm_id,github.issue_number))[0]; return workspace.ancestor(default,pr.head)
 def observe_issue(runtime,issue_number,*,reader=None,kanban=None,workspace=None):
-    github=observe_github(runtime.config,issue_number,_default(reader,GhReader))
+    github=observe_github(replace(runtime.config,issues=runtime.config.issues+tuple(map(int,runtime.retired_issues))),issue_number,_default(reader,GhReader))
     if github.unsafe_reason or getattr(github.pull_request,"merged_at",None): return IssueObservation(github,github.planner,{})
     execution={}; actual_workspace=_default(workspace,lambda:GitWorkspace(runtime.repo_path))
     try: planner=_overlay(runtime,github,_default(kanban,lambda:KanbanAdapter(runtime.board,runtime.repo_path)),execution); planner=replace(planner,base_current=_base_current(runtime,github,actual_workspace))
     except Exception as exc: planner=replace(github.planner,unsafe_reason=f"execution observation failed: {exc}")
     return IssueObservation(github,planner,execution)
-def plan_once(runtime,issue_number,*,reader=None,kanban=None,workspace=None,planner=plan_issue):
-    observed=observe_issue(runtime,issue_number,reader=reader,kanban=kanban,workspace=workspace); return PlannedIssue(observed,planner(observed.planner,runtime.config))
+def plan_once(runtime,issue_number,*,reader=None,kanban=None,workspace=None,planner=plan_issue): observed=observe_issue(runtime,issue_number,reader=reader,kanban=kanban,workspace=workspace); return PlannedIssue(observed,planner(observed.planner,runtime.config))
 def plan_payload(plan): return {"phase":plan.phase.value,"action":plan.action.value if plan.action else None,"would_action":plan.would_action.value if plan.would_action else None,"reason":plan.reason,"pr_head":plan.pr_head,"intent_key":plan.intent_key}
-def observation_payload(observed):
-    pr=observed.github.pull_request; pull=None if pr is None else {"number":pr.number,"url":pr.url,"head":pr.head,"base":pr.base,"state":pr.state,"draft":pr.draft,"merged_at":pr.merged_at}; return {"issue_state":observed.github.issue_state,"blockers":[{"issue":row.issue_number,"state":row.state,"internal":row.internal,"merged_at":row.merged_at} for row in observed.github.blockers],"pr":pull,"execution":dict(observed.execution),"base_current":observed.planner.base_current,"unsafe_reason":observed.planner.unsafe_reason}
+def observation_payload(observed): pr=observed.github.pull_request; pull=None if pr is None else {"number":pr.number,"url":pr.url,"head":pr.head,"base":pr.base,"state":pr.state,"draft":pr.draft,"merged_at":pr.merged_at}; return {"issue_state":observed.github.issue_state,"blockers":[{"issue":row.issue_number,"state":row.state,"internal":row.internal,"merged_at":row.merged_at} for row in observed.github.blockers],"pr":pull,"execution":dict(observed.execution),"base_current":observed.planner.base_current,"unsafe_reason":observed.planner.unsafe_reason}
 def dispatch_attempts(runtime,adapter,key,spec):
     for attempt in _attempts(runtime,key,"blocked:"):
         task=adapter.create(spec,key,attempt); runtime.cursors[key]={"task_id":task,"attempt":attempt,"created_at":time.time()}; facts=adapter.observe(task)

@@ -29,7 +29,7 @@ Bootstrap is inert: it never reconciles, dispatches, enables the timer, or touch
 - Native GitHub `blocked by` is the dependency graph; downstream waits for confirmed predecessor merge.
 - Review/adjudication markers use the full 40-character PR-head SHA.
 - Merge re-reads head, publications, adjudication, CI, mergeability, pause, and no-merge policy. Only observed `merged_at` releases dependencies.
-- The schema-7 manifest stores configuration and bounded execution cursors, never projected lifecycle/acceptance state.
+- The schema-7 manifest stores configuration, explicit operator retire dispositions, and bounded execution cursors, never projected lifecycle/acceptance state.
 
 Schema 5/6 manifests are not migrated or interpreted; initialize a fresh v7 swarm.
 
@@ -52,13 +52,14 @@ hermes swarm init --epic 42 \
 hermes swarm doctor --repo OWNER/REPO
 hermes swarm reconcile --dry-run --name <swarm>
 hermes swarm explain --name <swarm> --issue <n> --json
+hermes swarm retire --name <swarm> --issue <n> --reason 'closed outside the swarm'
 hermes swarm status --all
 hermes swarm reconcile --all
 hermes swarm pause --name <swarm>
 hermes swarm resume --name <swarm>
 ```
 
-Dry-run, explain, logging, and real reconcile use the same v7 plan. Dry-run/explain re-read GitHub and execution evidence but never save, dispatch, publish, or merge. Real reconciliation applies at most one planned action per issue.
+Dry-run, explain, logging, and real reconcile use the same v7 plan. Dry-run/explain re-read GitHub and execution evidence but never save, dispatch, publish, or merge. Real reconciliation applies at most one planned action per issue. Retire explicitly removes an issue from active scope, records the reason in the runtime manifest and journal, and keeps it in dependency observation until GitHub confirms a merged predecessor PR.
 
 Recovery is artifact-first and bounded per reconcile: implementation uses git/PR evidence; reviewer/adjudicator recovery uses exact-head GitHub publications and idempotent Kanban keys. Blocked attempts keep their immutable keys; later reconciles advance to the next `:aN` key, one fresh attempt after the configured initial bound, so transient provider failures can recover without operator state edits. Archived/triage failures still fail closed. A newly created ACTIVE task may remain `RUNNING` without a worker run for up to the persisted 300-second startup grace; after that it fails closed, and missing/future creation timestamps fail closed immediately.
 
