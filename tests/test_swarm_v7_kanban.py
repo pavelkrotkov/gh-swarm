@@ -22,7 +22,7 @@ class FakeHermes:
         if cmd == ["hermes", "--version"]: return "Hermes 0.test\n"
         if cmd == ["hermes", "kanban", "boards", "list", "--json"]: return "[]"
         if "--help" in cmd:
-            if "create" in cmd: return "usage: create TITLE --body BODY --workspace WORKSPACE [--branch BRANCH] --idempotency-key KEY --max-retries N --max-runtime TIME [--assignee NAME] [--skill SKILL] --model MODEL [--provider PROVIDER]"
+            if "create" in cmd: return "usage: create TITLE --body BODY --workspace WORKSPACE [--branch BRANCH] --idempotency-key KEY --max-retries N --max-runtime TIME [--assignee NAME] [--skill SKILL] --model MODEL [--provider PROVIDER] [--completion-contract CONTRACT]"
             if "block" in cmd: return "usage: block TASK REASON [--ids ID ...]"
             if "dispatch" in cmd: return "usage: dispatch [--max N] [--json]"
             return "usage: command TASK"
@@ -30,7 +30,7 @@ class FakeHermes:
         if action == "create":
             key = cmd[cmd.index("--idempotency-key") + 1]
             if key not in self.by_key:
-                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "title": cmd[5], "body":cmd[cmd.index("--body")+1], "status": "todo", "runs": []}
+                tid = f"task-{self.next_id}"; self.next_id += 1; self.by_key[key] = tid; self.tasks[tid] = {"id": tid, "title": cmd[5], "body":cmd[cmd.index("--body")+1], "completion_contract":cmd[cmd.index("--completion-contract")+1], "status": "todo", "runs": []}
             return json.dumps({"task": self.tasks[self.by_key[key]]})
         if action == "list": return json.dumps(list(self.tasks.values()))
         if action == "block":
@@ -76,7 +76,7 @@ class ContractTests(unittest.TestCase):
         fake.tasks[done]["status"]="done"; self.assertEqual(adapter.block_issue("s",57,"stale/cancelled"),(stale,review)); self.assertEqual((fake.tasks[stale]["status"],fake.tasks[review]["status"],fake.tasks[done]["status"],fake.tasks[collision]["status"],fake.tasks[other]["status"]),("blocked","blocked","done","ready","ready")); self.assertEqual(adapter.block_issue("s",57,"stale/cancelled"),())
 
     def test_assignee_and_run_record_are_execution_contract(self):
-        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({}); self.assertTrue(adapter.observe(task_id).has_run)
+        fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); create=next(call[0] for call in fake.calls if "create" in call[0]); self.assertEqual(create[create.index("--assignee")+1],"swarm-worker"); self.assertEqual(fake.tasks[task_id]["completion_contract"],"local-only"); repo_task=adapter.create(spec(completion_contract="owner/repo"),"repo-contract"); self.assertEqual(fake.tasks[repo_task]["completion_contract"],"owner/repo"); self.assertFalse(adapter.observe(task_id).has_run); fake.tasks[task_id]["runs"].append({}); self.assertTrue(adapter.observe(task_id).has_run)
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
     def test_stale_or_expired_running_run_is_retryable_failure(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); fake.tasks[task_id]["status"]="running"; old={"id":9,"started_at":120,"ended_at":125,"outcome":"completed","max_runtime_seconds":20}; active={"id":10,"started_at":120,"ended_at":None,"outcome":None,"max_runtime_seconds":20}; fake.tasks[task_id]["runs"]=[active,old]
