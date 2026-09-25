@@ -2,14 +2,11 @@
 # Every request is a bounded read. Markers index native GitHub rows but do not create
 # authority: shape, scope, slot, native commit, exact head, CI and ambiguity checks fail
 # closed before normalized facts reach planning or the separate merge mutation owner.
-import base64, json, re
-from collections import namedtuple
-from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, ReviewState
-from swarm_v7_cli_process import run_command
+import base64, json, re; from collections import namedtuple; from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, ReviewState; from swarm_v7_cli_process import run_command
 class GitHubReadError(RuntimeError): pass
 class UnsafeGitHubObservation(RuntimeError): pass
 class AdjudicationExecutionError(UnsafeGitHubObservation): pass
-BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
+BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at merge_sha labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
 _SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}; _JOB=re.compile(r"/actions/runs/\d+/job/(\d+)(?:$|[/?#])"); _RECEIPT=re.compile(r"HERMES_CHECKOUT_SHA=([0-9a-f]{40})\b"); _CHECKOUT=re.compile(r"git log -1 --format=%H\r?\n[^\r\n]*\b([0-9a-f]{40})\b")
 def exact_sha(value):
     if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
@@ -135,11 +132,11 @@ def _dependency_observation(config,rows,reader):
     blocked=any(fact.merged_at is None if fact.internal else fact.state=="OPEN" for fact in facts); return tuple(facts),DependencyState.BLOCKED if blocked else DependencyState.READY
 def _merge_gate(config,pr):
     if pr.merged_at: return MergeGate.READY
-    blocked=any((pr.state!="OPEN",pr.draft,pr.base!=config.default_branch,bool(set(pr.labels)&{x.lower() for x in config.no_merge_labels})))
+    blocked=any((pr.state!="OPEN",pr.draft,pr.base!=config.default_branch,pr.merge_state not in {"CLEAN","UNSTABLE","","UNKNOWN"},bool(set(pr.labels)&{x.lower() for x in config.no_merge_labels})))
     if blocked: return MergeGate.BLOCKED
     if pr.mergeable is None or pr.merge_state in {"","UNKNOWN"}: return MergeGate.UNKNOWN
     return MergeGate.READY if pr.mergeable else MergeGate.BLOCKED
-def _pr_observation(pr,number,head,reviewers,adjudication): return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
+def _pr_observation(pr,number,head,reviewers,adjudication): return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,str(pr.get("merge_commit_sha")) if pr.get("merged_at") and pr.get("merge_commit_sha") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
 def _with_pr(config,issue,state,blockers,dependency,pr,reader):
     head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=_recover_adjudication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
