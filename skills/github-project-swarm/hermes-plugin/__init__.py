@@ -15,7 +15,7 @@ def _resolve_cli():
     raise RuntimeError("multiple Skillfleet runtimes expose github-project-swarm; make Hermes skills.external_dirs unambiguous")
 def _setup_cli(parser):
     sys.path.insert(0,str(_resolve_cli().parent)); from swarm_v7_cli import build_parser
-    build_parser({name:None for name in "init status reconcile pause resume doctor validate explain prepare activate disable".split()},parser)
+    build_parser({name:None for name in "init status reconcile pause resume doctor validate explain retire prepare activate disable".split()},parser)
 def _handle_cli(_args):
     cli=_resolve_cli(); argv=sys.argv[2:] if len(sys.argv)>=2 and sys.argv[1]=="swarm" else []; os.execv(sys.executable,[sys.executable,str(cli),*argv])
 def register(ctx): ctx.register_cli_command(name="swarm",help="control GitHub project swarms",description="Schema-7 GitHub-derived swarm lifecycle operations.",setup_fn=_setup_cli,handler_fn=_handle_cli)

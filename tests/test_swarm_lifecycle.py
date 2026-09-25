@@ -7,7 +7,7 @@ if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli
 import swarm_v7_cli_process as process
 from swarm_v7 import Action, AdjudicationDecision, CiState, DependencyState, ExecutionState, ManifestV7, Observation, Phase, Plan, ReviewState, plan_issue
-from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, apply_plan, dispatch_attempts, plan_once
+from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, apply_plan, dispatch_attempts, observe_issue, plan_once
 from swarm_v7_github import GitHubIssueObservation
 from swarm_v7_kanban import Outcome, semantic_key
 LEGACY=("lifecycle.py","observability.py","swarm.py","swarm_v6.py","swarm_legacy.py")
@@ -18,7 +18,11 @@ class LifecycleTests(unittest.TestCase):
     def test_only_final_v7_runtime_entrypoints_remain(self):
         for name in LEGACY: self.assertFalse((SCRIPTS/name).exists(),name)
         self.assertNotIn("Facade",(SCRIPTS/"swarm_v7_cli.py").read_text())
-    def test_cli_contains_exact_retained_command_surface(self): self.assertEqual(set(cli._parser()._subparsers._group_actions[0].choices),{"init","status","reconcile","pause","resume","doctor","validate","explain","prepare","activate","disable"})
+    def test_cli_contains_exact_retained_command_surface(self): self.assertEqual(set(cli._parser()._subparsers._group_actions[0].choices),{"init","status","reconcile","pause","resume","doctor","validate","explain","retire","prepare","activate","disable"})
+    def test_retired_issue_remains_internal_to_github_dependency_observation(self):
+        rt=runtime(issues=(2,)); rt.retired_issues={"1":"closed externally"}; github=SimpleNamespace(unsafe_reason="stop",pull_request=None,planner=Observation(2),issue_number=2)
+        with patch("swarm_v7_controller.observe_github",return_value=github) as observe: self.assertIs(observe_issue(rt,2).github,github)
+        self.assertEqual(observe.call_args.args[0].issues,(2,1))
     def test_schema_five_and_six_fail_closed(self):
         for schema in (5,6):
             with tempfile.TemporaryDirectory() as td:

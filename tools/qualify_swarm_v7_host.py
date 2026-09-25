@@ -241,7 +241,7 @@ def assert_true(value, message: str) -> None:
 def contract_probes(h: Harness) -> None:
     h.run(["hermes", "--version"])
     help_text = h.swarm("--help").stdout
-    for command in ("init", "status", "reconcile", "pause", "resume", "doctor", "validate", "explain", "prepare", "activate", "disable"):
+    for command in ("init", "status", "reconcile", "pause", "resume", "doctor", "validate", "explain", "retire", "prepare", "activate", "disable"):
         assert_true(command in help_text, f"hermes swarm --help is missing {command}")
     h.run(["git", "--version"])
     h.run(["hermes", "kanban", "boards", "list", "--json"])

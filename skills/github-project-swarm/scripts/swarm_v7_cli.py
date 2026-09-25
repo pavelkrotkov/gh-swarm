@@ -49,7 +49,7 @@ def load(path):
     if raw.get("schema")!=7: raise RuntimeError(f"{path}: unsupported swarm schema {raw.get('schema')!r}; schema 5/6 migration is intentionally disabled. Initialize a fresh v7 swarm.")
     return RuntimeManifest.from_dict(raw)
 def journal(runtime,issue,planned,result,elapsed_ms,error=None):
-    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); row={"ts":time.time(),"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":"error" if error else "none" if result is None else result.outcome,"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),**fields}; STATE.mkdir(parents=True,exist_ok=True)
+    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); row={"ts":time.time(),"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":"error" if error else "none" if result is None else result.outcome,"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,**fields}; STATE.mkdir(parents=True,exist_ok=True)
     with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n")
 def _model(value):
     if len(parts:=shlex.split(value))==1: return parts[0]
@@ -92,16 +92,14 @@ def prepare(): print("prepare: schema 7 needs no prompt/profile projection; exec
 def activate(*,repo=None): validate(repo=repo,all_swarms=True); systemctl("daemon-reload"); systemctl("enable","--now",_TIMER); _timer_health(); print(f"activated {_TIMER}")
 def disable(): systemctl("disable","--now",_TIMER,check=False); systemctl("stop",_SERVICE,check=False); print("disabled Hermes swarm reconciliation; Hermes gateway was not touched")
 def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"observation":observation_payload(planned.observation),"plan":plan_payload(planned.plan)}
-def _render(row):
-    plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); head=f" head={plan['pr_head'][:12]}" if plan.get("pr_head") else ""; return f"{row['swarm']} #{row['issue']}: {plan['phase']} action={action}{head} — {plan['reason']}"
+def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); head=f" head={plan['pr_head'][:12]}" if plan.get("pr_head") else ""; return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} {plan['phase']} action={action}{head} — {plan['reason']}"
 def dry_run(*,name=None,all_swarms=False,json_output=False):
     rows=[]; _timer_health()
-    for path in selected(name=name,all_swarms=all_swarms):
-        runtime=load(path); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)
+    for path in selected(name=name,all_swarms=all_swarms): runtime=load(path); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)
     print(json.dumps(rows,ensure_ascii=False,sort_keys=True) if json_output else "\n".join(map(_render,rows)) if rows else "dry-run: no swarms configured")
 def explain(*,name,issue,json_output=False):
     runtime=load(selected(name=name)[0])
-    if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} is not configured in swarm {runtime.config.swarm_id}")
+    if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} retired from swarm {runtime.config.swarm_id} [{runtime.config.repo}]: {runtime.retired_issues[str(issue)]}" if str(issue) in runtime.retired_issues else f"issue #{issue} is not configured in swarm {runtime.config.swarm_id}")
     row=_snapshot(runtime,issue,plan_once(runtime,issue)); print(json.dumps(row,ensure_ascii=False,sort_keys=True) if json_output else _render(row))
 def reconcile_runtime(runtime):
     errors=[]; sweep=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).watchdog()
@@ -124,6 +122,14 @@ def reconcile(args):
         except BlockingIOError: print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
         except Exception as exc: errors.append(f"{path.stem}: {exc}")
     if errors: raise RuntimeError("reconciliation encountered errors:\n"+"\n".join(errors))
+def retire(args):
+    reason=args.reason.strip(); path=selected(name=args.name)[0]
+    if not reason: raise RuntimeError("--reason must be non-empty")
+    with locked(STATE/f".reconcile.{path.stem}.lock"):
+        runtime=load(path); issue=args.issue
+        if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} is not active in swarm {runtime.config.swarm_id}")
+        runtime.config=replace(runtime.config,issues=tuple(number for number in runtime.config.issues if number!=issue)); runtime.retired_issues[str(issue)]=reason; save(runtime); journal(runtime,issue,None,ActionResult("retired",detail=reason),0)
+    print(f"{runtime.config.swarm_id} [{runtime.config.repo}] #{issue}: retired from active scope — {reason}")
 def pause(args,value):
     for path in selected(name=args.name,all_swarms=args.all):
         with locked(STATE/f".reconcile.{path.stem}.lock"):
@@ -135,11 +141,10 @@ def build_parser(handlers,root=None):
         p=sub.add_parser(name); _selection(p)
         if name=="reconcile": p.add_argument("--dry-run",action="store_true"); p.add_argument("--json",action="store_true")
         p.set_defaults(fn=handlers[name])
-    p=sub.add_parser("doctor"); p.add_argument("--repo"); p.set_defaults(fn=handlers["doctor"]); p=sub.add_parser("validate"); p.add_argument("--repo"); _selection(p); p.set_defaults(fn=handlers["validate"]); p=sub.add_parser("explain"); p.add_argument("--name",required=True); p.add_argument("--issue",type=int,required=True); p.add_argument("--json",action="store_true"); p.set_defaults(fn=handlers["explain"])
+    p=sub.add_parser("doctor"); p.add_argument("--repo"); p.set_defaults(fn=handlers["doctor"]); p=sub.add_parser("validate"); p.add_argument("--repo"); _selection(p); p.set_defaults(fn=handlers["validate"]); p=sub.add_parser("explain"); p.add_argument("--name",required=True); p.add_argument("--issue",type=int,required=True); p.add_argument("--json",action="store_true"); p.set_defaults(fn=handlers["explain"]); p=sub.add_parser("retire"); p.add_argument("--name",required=True); p.add_argument("--issue",type=int,required=True); p.add_argument("--reason",required=True); p.set_defaults(fn=handlers["retire"])
     for name in ("prepare","disable"): sub.add_parser(name).set_defaults(fn=handlers[name])
     p=sub.add_parser("activate"); p.add_argument("--repo"); p.set_defaults(fn=handlers["activate"]); return root
-def _parser():
-    handlers={"init":lambda args:init(args,reconcile_runtime),"status":lambda args:dry_run(name=args.name,all_swarms=args.all),"reconcile":reconcile,"pause":lambda args:pause(args,True),"resume":lambda args:pause(args,False),"doctor":doctor,"validate":lambda args:validate(repo=args.repo,name=args.name,all_swarms=args.all or not args.name),"explain":lambda args:explain(name=args.name,issue=args.issue,json_output=args.json),"prepare":lambda _:prepare(),"activate":lambda args:activate(repo=args.repo),"disable":lambda _:disable()}; return build_parser(handlers)
+def _parser(): handlers={"init":lambda args:init(args,reconcile_runtime),"status":lambda args:dry_run(name=args.name,all_swarms=args.all),"reconcile":reconcile,"pause":lambda args:pause(args,True),"resume":lambda args:pause(args,False),"doctor":doctor,"validate":lambda args:validate(repo=args.repo,name=args.name,all_swarms=args.all or not args.name),"explain":lambda args:explain(name=args.name,issue=args.issue,json_output=args.json),"retire":retire,"prepare":lambda _:prepare(),"activate":lambda args:activate(repo=args.repo),"disable":lambda _:disable()}; return build_parser(handlers)
 def main(): args=_parser().parse_args(); args.fn(args)
 if __name__=="__main__":
     try: main()

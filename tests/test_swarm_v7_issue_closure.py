@@ -63,7 +63,7 @@ class IssueClosureTests(unittest.TestCase):
     def test_authoritative_closedby_without_timeline(self):
         reader=Reader(state="closed",graphql_data={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":61,"merged":True,"repository":{"nameWithOwner":"owner/repo"}}]}}}})
         reader.values["repos/owner/repo/issues/50/timeline"]=[]
-        observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
+        observed=gh.observe_issue(config(),50,reader); self.assertIsNone(observed.unsafe_reason); self.assertEqual(observed.issue_state,"CLOSED"); self.assertEqual(observed.pull_request.number,61); self.assertTrue(observed.planner.merged)
     def test_authoritative_closure_reads_later_graphql_page(self):
         first={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}}; second={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":62,"merged":True,"repository":{"nameWithOwner":"owner/repo"}}]}}}}
         reader=Reader(state="closed",graphql_data=[first,second]); other=pr(H2,MERGED_AT); other.update(number=62); reader.values["repos/owner/repo/pulls/62"]=other; reader.values["repos/owner/repo/issues/50/timeline"]=[]; reader.values[f"repos/owner/repo/commits/{H2}/check-runs?filter=latest"]={"check_runs":[]}; reader.values[f"repos/owner/repo/commits/{H2}/status"]={"statuses":[]}; reader.values["repos/owner/repo/pulls/62/reviews"]=[]; reader.values["repos/owner/repo/issues/62/comments"]=[]
@@ -74,7 +74,7 @@ class IssueClosureTests(unittest.TestCase):
     def test_no_linkage_stalls_for_closed_issue(self):
         reader=Reader(state="closed",graphql_data={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[]}}}})
         reader.values["repos/owner/repo/issues/50/timeline"]=[]
-        observed=gh.observe_issue(config(),50,reader); self.assertIsNotNone(observed.unsafe_reason); self.assertIn("no merged PR",observed.unsafe_reason)
+        observed=gh.observe_issue(config(),50,reader); self.assertEqual(observed.issue_state,"CLOSED"); self.assertIsNotNone(observed.unsafe_reason); self.assertIn("no merged PR",observed.unsafe_reason)
     def test_unmerged_authoritative_ref_no_timeline_fallback(self):
         reader=Reader(state="closed",graphql_data={"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[{"number":61,"merged":False,"repository":{"nameWithOwner":"owner/repo"}}]}}}})
         other=pr(H2,MERGED_AT); other.update(number=62); other["head"]["ref"]="other/branch"
@@ -83,5 +83,5 @@ class IssueClosureTests(unittest.TestCase):
         reader.values["repos/owner/repo/commits/"+H2+"/check-runs?filter=latest"]={"check_runs":[]}
         reader.values["repos/owner/repo/commits/"+H2+"/status"]={"statuses":[]}
         reader.values["repos/owner/repo/issues/62/comments"]=[]
-        observed=gh.observe_issue(config(),50,reader); self.assertIsNotNone(observed.unsafe_reason); self.assertIsNone(observed.pull_request)
+        observed=gh.observe_issue(config(),50,reader); self.assertEqual(observed.issue_state,"CLOSED"); self.assertIsNotNone(observed.unsafe_reason); self.assertIsNone(observed.pull_request)
 if __name__=="__main__": unittest.main()

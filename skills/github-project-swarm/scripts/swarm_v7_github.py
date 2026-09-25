@@ -99,13 +99,11 @@ def _rows(value):
 def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower()=="success"
 def _bind_checkout(reader,repo,head,row):
     item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
-def checks(reader,repo,head):
-    runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
+def checks(reader,repo,head): runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
 def _run_state(runs):
     if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
     values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK and all(map(lambda row:row.get("_exact_checkout",True),runs)) else CiState.PENDING
-def _status_state(rows):
-    values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
+def _status_state(rows): values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
 def ci_state(config,raw):
     if not config.ci_required: return CiState.NOT_APPLICABLE
     runs,statuses=raw
@@ -119,7 +117,7 @@ def _labels(value): return {str(row.get("name") if isinstance(row,dict) else row
 def _same_repo(issue,repo): value=str(issue.get("repository_url") or "").rstrip("/"); return not value or value==f"https://api.github.com/repos/{repo}"
 def _closure_pr_ok(pr,number): return positive_int(pr.get("number"),"PR number")==number and bool(pr.get("merged_at"))
 def _closure_pr(reader,repo,node): node=mapping(node,"closure reference"); number=positive_int(node.get("number"),"closure PR number"); pr=mapping(reader.get(f"repos/{repo}/pulls/{number}"),f"PR {number}") if nested_text(node,"repository","nameWithOwner")==repo and node.get("merged") else mapping(None,"valid closure reference"); return pr if _closure_pr_ok(pr,number) else mapping(None,"confirmed closure PR")
-def _closure_prs(reader,repo,issue): owner,name=repo.split("/",1); query=f'query($endCursor:String){{repository(owner:"{owner}",name:"{name}"){{issue(number:{issue}){{closedByPullRequestsReferences(first:100,after:$endCursor){{nodes{{number,merged,repository{{nameWithOwner}}}} pageInfo{{hasNextPage,endCursor}}}}}}}}}}'; pages=reader.graphql(query); pages=[pages] if isinstance(pages,dict) else _rows(pages); nodes=[node for data in pages for node in _rows(mapping(mapping(mapping(data.get("repository"),"repository").get("issue"),"issue").get("closedByPullRequestsReferences"),"closure references").get("nodes"))]; return None if not nodes else [_closure_pr(reader,repo,node) for node in nodes]
+def _closure_prs(reader,repo,issue): owner,name=repo.split("/",1); query=f'query($endCursor:String){{repository(owner:"{owner}",name:"{name}"){{issue(number:{issue}){{closedByPullRequestsReferences(first:100,after:$endCursor){{nodes{{number,merged,repository{{nameWithOwner}}}} pageInfo{{hasNextPage,endCursor}}}}}}}}}}'; pages=reader.graphql(query); pages=[pages] if isinstance(pages,dict) else _rows(pages); nodes=[node for data in pages for node in _rows(mapping(mapping(mapping(data.get("repository"),"repository").get("issue"),"issue").get("closedByPullRequestsReferences"),"closure references").get("nodes"))]; return None if not nodes else [_closure_pr(reader,repo,node) for node in nodes if node.get("merged")]
 def _cross_reference(event,repo): source=event.get("source") if event.get("event")=="cross-referenced" else None; linked=source.get("issue") if isinstance(source,dict) else None; return positive_int(linked.get("number"),"linked PR number") if isinstance(linked,dict) and _same_repo(linked,repo) and isinstance(linked.get("pull_request"),dict) else None
 def _timeline_prs(reader,repo,issue): numbers={number for event in reader.list(f"repos/{repo}/issues/{issue}/timeline") if (number:=_cross_reference(event,repo)) is not None}; return [mapping(reader.get(f"repos/{repo}/pulls/{number}"),f"PR {number}") for number in sorted(numbers)]
 def _linked_prs(reader,repo,issue,issue_state=None,branch=None): prs=_closure_prs(reader,repo,issue) if issue_state=="CLOSED" else None; return ([pr for pr in _branch_prs(_timeline_prs(reader,repo,issue),branch) if pr.get("merged_at")] if issue_state=="CLOSED" else _timeline_prs(reader,repo,issue)) if prs is None else prs
@@ -141,8 +139,7 @@ def _merge_gate(config,pr):
     if blocked: return MergeGate.BLOCKED
     if pr.mergeable is None or pr.merge_state in {"","UNKNOWN"}: return MergeGate.UNKNOWN
     return MergeGate.READY if pr.mergeable else MergeGate.BLOCKED
-def _pr_observation(pr,number,head,reviewers,adjudication):
-    return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
+def _pr_observation(pr,number,head,reviewers,adjudication): return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
 def _with_pr(config,issue,state,blockers,dependency,pr,reader):
     head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=_recover_adjudication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
@@ -150,7 +147,7 @@ def _with_pr(config,issue,state,blockers,dependency,pr,reader):
 def _observe_issue(config,issue,reader):
     row=mapping(reader.get(f"repos/{config.repo}/issues/{issue}"),"issue"); state=str(row.get("state") or "").upper(); blockers,dependency=_dependency_observation(config,reader.list(f"repos/{config.repo}/issues/{issue}/dependencies/blocked_by"),reader); pr=_select_pr(_linked_prs(reader,config.repo,issue,state,_issue_branch(config,issue)),_issue_branch(config,issue,state))
     if pr is not None: return _with_pr(config,issue,state,blockers,dependency,pr,reader)
-    if state!="OPEN": raise UnsafeGitHubObservation("issue is not open and no merged PR is confirmed")
+    if state!="OPEN": reason=f"issue is {state.lower()} and no merged PR is confirmed"; return GitHubIssueObservation(issue,state,blockers,None,Observation(issue,dependency=dependency,merge_gate=MergeGate.UNKNOWN,unsafe_reason=reason),reason)
     return GitHubIssueObservation(issue,state,blockers,None,Observation(issue,dependency=dependency))
 def observe_issue(config:ManifestV7,issue:int,reader=None):
     try: return _observe_issue(config,issue,reader if reader is not None else GhReader())
