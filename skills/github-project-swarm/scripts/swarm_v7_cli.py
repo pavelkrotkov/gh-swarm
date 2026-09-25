@@ -38,8 +38,9 @@ def load(path):
     if not isinstance(raw,dict): raise RuntimeError(f"{path}: swarm manifest must be a JSON object")
     if raw.get("schema")!=7: raise RuntimeError(f"{path}: unsupported swarm schema {raw.get('schema')!r}; schema 5/6 migration is intentionally disabled. Initialize a fresh v7 swarm.")
     return RuntimeManifest.from_dict(raw)
+def _journal_outcome(error,result): return "error" if error else "none" if result is None else result.outcome
 def journal(runtime,issue,planned,result,elapsed_ms,error=None,*,correlation_id=None,event="reconcile",receipt=None):
-    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); gates=[] if planned is None else observation_payload(planned.observation,runtime.config)["gates"]; row={"ts":time.time(),"correlation_id":correlation_id,"event":event,"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":"error" if error else "none" if result is None else result.outcome,"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,"gates":gates,**fields,**(receipt or {})}; STATE.mkdir(parents=True,exist_ok=True)
+    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); gates=[] if planned is None else observation_payload(planned.observation,runtime.config)["gates"]; row={"ts":time.time(),"correlation_id":correlation_id,"event":event,"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":_journal_outcome(error,result),"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,"gates":gates,**fields,**(receipt or {})}; STATE.mkdir(parents=True,exist_ok=True)
     with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n"); return row
 def _merge_attribution(runtime,issue,planned):
     pr=planned.observation.github.pull_request
@@ -56,7 +57,6 @@ def _apply_with_receipt(runtime,planned,correlation_id):
     try: result=apply_plan(runtime,planned)
     except Exception as exc: journal(runtime,planned.observation.github.issue_number,planned,None,0,exc,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,"rejected")); raise
     journal(runtime,planned.observation.github.issue_number,planned,result,0,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,result.outcome)); return result
-def _gate_text(gates): return ";".join(f"{gate['code']}:{gate['detail']}" for gate in gates) or "none"
 def _reconcile_context(correlation_id,rows): return correlation_id or uuid.uuid4().hex,[] if rows is None else rows
 def _model(value):
     if len(parts:=shlex.split(value))==1: return parts[0]
@@ -98,7 +98,7 @@ def prepare(): print("prepare: schema 7 needs no prompt/profile projection; exec
 def activate(*,repo=None): validate(repo=repo,all_swarms=True); systemctl("daemon-reload"); systemctl("enable","--now",_TIMER); _timer_health(); print(f"activated {_TIMER}")
 def disable(): systemctl("disable","--now",_TIMER,check=False); systemctl("stop",_SERVICE,check=False); print("disabled Hermes swarm reconciliation; Hermes gateway was not touched")
 def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"merge_policy":runtime.config.merge_policy,"observation":observation_payload(planned.observation,runtime.config),"plan":plan_payload(planned.plan),"merge_attribution":_merge_attribution(runtime,issue,planned)}
-def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); pr=(row["observation"]["pr"] or {}).get("number","-"); head=(plan.get("pr_head") or "-")[:12]; attribution=(row.get("merge_attribution") or {}).get("state","-"); return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} merge={row['merge_policy']} {plan['phase']} action={action} pr=#{pr} head={head} gates={_gate_text(row['observation']['gates'])} merge_source={attribution} — {plan['reason']}"
+def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); pr=(row["observation"]["pr"] or {}).get("number","-"); head=(plan.get("pr_head") or "-")[:12]; attribution=(row.get("merge_attribution") or {}).get("state","-"); return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} merge={row['merge_policy']} {plan['phase']} action={action} pr=#{pr} head={head} gates={json.dumps(row['observation']['gates'],separators=(',',':'))} merge_source={attribution} — {plan['reason']}"
 def dry_run(*,name=None,all_swarms=False,json_output=False):
     rows=[]; runtimes=[]; _timer_health(); paths=selected(name=name,all_swarms=all_swarms)
     for path in paths: runtime=load(path); runtimes.append(runtime); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)

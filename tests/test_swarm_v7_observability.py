@@ -20,7 +20,7 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         self.assertEqual(gates["hold_label"],"hold-merge"); self.assertTrue({"paused","manual_merge_mode","dependency_wait","ci_missing_evidence"}<=set(gates))
         ready=planned(rt,merge_gate=MergeGate.BLOCKED,labels=("hold-merge",)); self.assertEqual((ready.plan.phase,ready.plan.action),(Phase.MERGE_BLOCKED,None))
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)): rendered=cli._render(cli._snapshot(rt,7,ready))
-        self.assertIn("MERGE_BLOCKED",rendered); self.assertIn("hold_label:hold-merge",rendered); self.assertNotIn("EXECUTION_STALLED",rendered)
+        self.assertIn("MERGE_BLOCKED",rendered); self.assertIn('"code":"hold_label"',rendered); self.assertIn("hold-merge",rendered); self.assertNotIn("EXECUTION_STALLED",rendered)
         behind=planned(runtime()); behind.observation.github.pull_request.merge_state="BEHIND"; self.assertEqual(gh._merge_gate(runtime().config,behind.observation.github.pull_request),MergeGate.BLOCKED)
         execution=planned(runtime(),unsafe_reason="execution attempts exhausted"); self.assertIn("execution_failure",{row["code"] for row in observation_payload(execution.observation,runtime().config)["gates"]})
         failed=planned(runtime(),unsafe_reason="GitHub observation failed: 502",github_unsafe="GitHub observation failed: 502"); codes={row["code"] for row in observation_payload(failed.observation,runtime().config)["gates"]}; self.assertIn("observation_failure",codes); self.assertNotIn("execution_failure",codes)
