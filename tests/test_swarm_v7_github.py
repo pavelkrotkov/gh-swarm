@@ -12,7 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 v7 = importlib.import_module("swarm_v7")
 gh = importlib.import_module("swarm_v7_github")
 H1 = "1" * 40; H2 = "2" * 40
-def action_check(head=H2,job=99): return {"name":"tests","status":"completed","conclusion":"success","head_sha":head,"app":{"slug":"github-actions"},"details_url":f"https://github.com/owner/repo/actions/runs/7/job/{job}"}
+def action_check(head=H2,job=99,conclusion="success"): return {"name":"tests","status":"completed","conclusion":conclusion,"head_sha":head,"app":{"slug":"github-actions"},"details_url":f"https://github.com/owner/repo/actions/runs/7/job/{job}"}
 def checkout_log(head): return f"2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
 
 def config(): return v7.ManifestV7(swarm_id="test",repo="owner/repo",default_branch="main",issues=(45,46),worker_model="worker",reviewer_models=("reviewer-a","reviewer-b"),adjudicator_model="adjudicator")
@@ -83,6 +83,9 @@ class ExactCheckoutCiTests(unittest.TestCase):
         cases=((action_check(),""),(action_check(H1),checkout_log(H1)),(action_check(),checkout_log(H1)+f"HERMES_CHECKOUT_SHA={H2}\n"))
         for run,log in cases:
             with self.subTest(head=run["head_sha"],log=bool(log)): self.assertEqual(self.state(run,log),v7.CiState.PENDING)
+    def test_skipped_and_neutral_actions_checks_need_no_checkout_receipt(self):
+        for conclusion in ("skipped","neutral"):
+            with self.subTest(conclusion=conclusion): self.assertEqual(self.state(action_check(conclusion=conclusion),""),v7.CiState.PASSED)
 class DependencyTests(unittest.TestCase):
     def test_github_merged_at_releases_internal_dependency(self):
         values={"repos/owner/repo/issues/45/timeline":[cross_ref(101)],"repos/owner/repo/pulls/101":pr(101,H1,state="closed",merged_at="2026-09-04T11:00:00Z")}; facts,state=gh._dependency_observation(config(),[{"number":45,"state":"closed"}],FakeReader(values)); self.assertEqual(state,v7.DependencyState.READY); self.assertEqual(facts[0].merged_at,"2026-09-04T11:00:00Z")

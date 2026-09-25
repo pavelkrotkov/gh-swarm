@@ -34,7 +34,9 @@ class GhReader:
     def get(self,endpoint):
         try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
         except (json.JSONDecodeError,RuntimeError) as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}" if isinstance(exc,json.JSONDecodeError) else str(exc)) from exc
-    def text(self,endpoint): return run_command(["gh","api","--method","GET",endpoint],timeout=self.timeout_s)
+    def text(self,endpoint):
+        try: return run_command(["gh","api","--method","GET",endpoint],timeout=self.timeout_s)
+        except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
     def graphql(self,query): result=json.loads(run_command(["gh","api","graphql","--paginate","--slurp","-f",f"query={query}"],timeout=self.timeout_s)); return [mapping(row.get("data") if not row.get("errors") else None,"GraphQL data") for row in _rows(result)]
     def list(self,endpoint):
         rows=[]
@@ -94,16 +96,14 @@ def _recover_adjudication(config,issue,head,rows):
 def _rows(value):
     if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise GitHubReadError("check/status rows are not object lists")
     return value
-def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower() in _OK
+def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower()=="success"
 def _bind_checkout(reader,repo,head,row):
     item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
 def checks(reader,repo,head):
     runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
 def _run_state(runs):
     if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
-    values={str(row.get("conclusion")).lower() for row in runs}
-    if values&_BAD: return CiState.FAILED
-    return CiState.PASSED if values<=_OK and all(row.get("_exact_checkout",True) for row in runs) else CiState.PENDING
+    values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK and all(row.get("_exact_checkout",True) for row in runs) else CiState.PENDING
 def _status_state(rows):
     values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
 def ci_state(config,raw):
