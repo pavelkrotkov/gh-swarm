@@ -103,7 +103,7 @@ def checks(reader,repo,head):
     runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
 def _run_state(runs):
     if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
-    values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK and all(row.get("_exact_checkout",True) for row in runs) else CiState.PENDING
+    values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK and all(map(lambda row:row.get("_exact_checkout",True),runs)) else CiState.PENDING
 def _status_state(rows):
     values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
 def ci_state(config,raw):
