@@ -12,6 +12,8 @@ sys.path.insert(0, str(SCRIPTS))
 v7 = importlib.import_module("swarm_v7")
 gh = importlib.import_module("swarm_v7_github")
 H1 = "1" * 40; H2 = "2" * 40
+def action_check(head=H2,job=99): return {"name":"tests","status":"completed","conclusion":"success","head_sha":head,"app":{"slug":"github-actions"},"details_url":f"https://github.com/owner/repo/actions/runs/7/job/{job}"}
+def checkout_log(head): return f"2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
 
 def config(): return v7.ManifestV7(swarm_id="test",repo="owner/repo",default_branch="main",issues=(45,46),worker_model="worker",reviewer_models=("reviewer-a","reviewer-b"),adjudicator_model="adjudicator")
 def review(slot, head, native=None, ident=None): return {"id":ident or slot,"body":gh.review_marker("test",46,slot,head),"commit_id":native if native is not None else head,"state":"COMMENTED","submitted_at":"2026-09-12T00:00:00Z"}
@@ -29,6 +31,10 @@ class FakeReader:
         self.calls.append(("list",endpoint))
         if self.error: raise gh.GitHubReadError(self.error)
         return self.values.get(endpoint,[])
+    def text(self,endpoint):
+        self.calls.append(("text",endpoint))
+        if self.error: raise gh.GitHubReadError(self.error)
+        return self.values.get(endpoint,"")
 class ExactHeadPublicationTests(unittest.TestCase):
     def test_old_head_review_is_ignored(self):
         pubs,state=gh.review_publications(config(),46,H2,[review(1,H1)]); self.assertEqual(pubs,()); self.assertEqual(state,v7.ReviewState.NONE)
@@ -65,6 +71,18 @@ class ExactHeadPublicationTests(unittest.TestCase):
         with self.assertRaises(ValueError): gh.review_marker("test",46,1,H1[:12])
         with self.assertRaises(ValueError): gh.adjudication_marker("test",46,H1[:12])
         with self.assertRaises(ValueError): gh.exact_sha(H1[:12])
+class ExactCheckoutCiTests(unittest.TestCase):
+    def state(self,run,log):
+        values={f"repos/owner/repo/commits/{H2}/check-runs?filter=latest":{"check_runs":[run]},f"repos/owner/repo/commits/{H2}/status":{"statuses":[]},"repos/owner/repo/actions/jobs/99/logs":log}
+        return gh.ci_state(config(),gh.checks(FakeReader(values),"owner/repo",H2))
+    def test_success_requires_current_checked_out_sha(self):
+        self.assertEqual(self.state(action_check(),f"HERMES_CHECKOUT_SHA={H2}\n"),v7.CiState.PASSED)
+        self.assertEqual(self.state(action_check(),checkout_log(H2)),v7.CiState.PASSED)
+        self.assertEqual(self.state(action_check(),checkout_log(H1)),v7.CiState.PENDING)
+    def test_missing_stale_and_ambiguous_receipts_stay_pending(self):
+        cases=((action_check(),""),(action_check(H1),checkout_log(H1)),(action_check(),checkout_log(H1)+f"HERMES_CHECKOUT_SHA={H2}\n"))
+        for run,log in cases:
+            with self.subTest(head=run["head_sha"],log=bool(log)): self.assertEqual(self.state(run,log),v7.CiState.PENDING)
 class DependencyTests(unittest.TestCase):
     def test_github_merged_at_releases_internal_dependency(self):
         values={"repos/owner/repo/issues/45/timeline":[cross_ref(101)],"repos/owner/repo/pulls/101":pr(101,H1,state="closed",merged_at="2026-09-04T11:00:00Z")}; facts,state=gh._dependency_observation(config(),[{"number":45,"state":"closed"}],FakeReader(values)); self.assertEqual(state,v7.DependencyState.READY); self.assertEqual(facts[0].merged_at,"2026-09-04T11:00:00Z")

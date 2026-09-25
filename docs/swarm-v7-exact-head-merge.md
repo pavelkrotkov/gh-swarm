@@ -22,7 +22,11 @@ requires all of these gates:
    dispositions exactly match `required_changes[].source_comment_ids`, and an `accept`
    contains no fixes or required changes;
 5. `ci_mode=required` is `PASSED`; an empty, pending, missing, unknown, or failed check set
-   is not green. `ci_mode=none` deliberately omits this CI requirement;
+   is not green. A successful GitHub Actions job is green only when its check-run `head_sha`
+   equals `H` and its job log proves the checkout is `H`, using an explicit
+   `HERMES_CHECKOUT_SHA=<sha>` receipt or the unambiguous full-SHA receipt emitted by
+   `actions/checkout`. Missing, stale, merge-candidate, or conflicting checkout evidence
+   stays pending. `ci_mode=none` deliberately omits this CI requirement;
 6. GitHub reports the PR mergeable with a compatible merge state (`CLEAN` or `UNSTABLE`;
    the latter is still blocked by required CI when `ci_mode=required`);
 7. no configured no-merge/hold label applies and the swarm is not paused.

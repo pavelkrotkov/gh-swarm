@@ -10,7 +10,7 @@ class GitHubReadError(RuntimeError): pass
 class UnsafeGitHubObservation(RuntimeError): pass
 class AdjudicationExecutionError(UnsafeGitHubObservation): pass
 BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
-_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
+_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}; _JOB=re.compile(r"/actions/runs/\d+/job/(\d+)(?:$|[/?#])"); _RECEIPT=re.compile(r"HERMES_CHECKOUT_SHA=([0-9a-f]{40})\b"); _CHECKOUT=re.compile(r"git log -1 --format=%H\r?\n[^\r\n]*\b([0-9a-f]{40})\b")
 def exact_sha(value):
     if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
     return value
@@ -33,8 +33,8 @@ class GhReader:
         self.timeout_s=timeout_s
     def get(self,endpoint):
         try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
-        except json.JSONDecodeError as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}") from exc
-        except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
+        except (json.JSONDecodeError,RuntimeError) as exc: raise GitHubReadError(f"GitHub read failed for {endpoint}: {exc}") from exc
+    def text(self,endpoint): return run_command(["gh","api","--method","GET",endpoint],timeout=self.timeout_s)
     def graphql(self,query): result=json.loads(run_command(["gh","api","graphql","--paginate","--slurp","-f",f"query={query}"],timeout=self.timeout_s)); return [mapping(row.get("data") if not row.get("errors") else None,"GraphQL data") for row in _rows(result)]
     def list(self,endpoint):
         rows=[]
@@ -72,8 +72,7 @@ def payload(body,head):
     matches=_DECISION.findall(body)
     if len(matches)!=1: raise AdjudicationExecutionError("adjudication requires exactly one machine-readable decision payload")
     try:
-        token=matches[0]+"="*((-len(matches[0]))%4)
-        value=json.loads(base64.b64decode(token.encode(),altchars=b"-_",validate=True).decode())
+        token=matches[0]+"="*((-len(matches[0]))%4); value=json.loads(base64.b64decode(token.encode(),altchars=b"-_",validate=True).decode())
     except Exception as exc: raise AdjudicationExecutionError("invalid adjudication decision payload") from exc
     if not isinstance(value,dict): raise AdjudicationExecutionError("invalid adjudication decision payload")
     if not _SHA.fullmatch(payload_head:=str(value.get("head_sha") or "")) or payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
@@ -95,17 +94,18 @@ def _recover_adjudication(config,issue,head,rows):
 def _rows(value):
     if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise GitHubReadError("check/status rows are not object lists")
     return value
+def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower() in _OK
+def _bind_checkout(reader,repo,head,row):
+    item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or item.get("html_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
 def checks(reader,repo,head):
-    runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return _rows(runs.get("check_runs") or []),_rows(status.get("statuses") or [])
+    runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
 def _run_state(runs):
     if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
     values={str(row.get("conclusion")).lower() for row in runs}
     if values&_BAD: return CiState.FAILED
-    return CiState.PASSED if values<=_OK else CiState.PENDING
+    return CiState.PASSED if values<=_OK and all(row.get("_exact_checkout",True) for row in runs) else CiState.PENDING
 def _status_state(rows):
-    values={str(row.get("state") or "").lower() for row in rows}
-    if values&{"failure","error"}: return CiState.FAILED
-    return CiState.PENDING if "pending" in values else CiState.PASSED
+    values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
 def ci_state(config,raw):
     if not config.ci_required: return CiState.NOT_APPLICABLE
     runs,statuses=raw

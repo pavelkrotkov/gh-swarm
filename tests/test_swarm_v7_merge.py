@@ -13,6 +13,8 @@ merge = importlib.import_module("swarm_v7_merge")
 
 H1 = "1" * 40
 H2 = "2" * 40
+def action_check(head=H1,job=99): return {"name":"tests","status":"completed","conclusion":"success","head_sha":head,"app":{"slug":"github-actions"},"details_url":f"https://github.com/owner/repo/actions/runs/7/job/{job}"}
+def checkout_log(head): return f"2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
 
 
 def config(*, ci_required=True, paused=False):
@@ -117,6 +119,9 @@ class FakeReader:
     def graphql(self, query):
         self.calls.append(("graphql", query))
         return {"repository": {"issue": {"closedByPullRequestsReferences": {"nodes": []}}}}
+    def text(self, endpoint):
+        self.calls.append(("text", endpoint))
+        return self.values.get(endpoint, "")
 
 
 def reader_for(
@@ -237,6 +242,11 @@ class MergePredicateTests(unittest.TestCase):
                 with self.assertRaises(merge.MergeAuthorityError):
                     merge.request_exact_head_merge(config(), 50, H1, reader_for(checks=checks), merger)
                 self.assertEqual(merger.calls, [])
+
+    def test_green_merge_candidate_checkout_never_merges(self):
+        merger = FakeMerger(); reader = reader_for(checks=[action_check()]); reader.values["repos/owner/repo/actions/jobs/99/logs"] = checkout_log(H2)
+        with self.assertRaisesRegex(merge.MergeAuthorityError, "CI policy"): merge.request_exact_head_merge(config(), 50, H1, reader, merger)
+        self.assertEqual(merger.calls, [])
 
     def test_ci_none_intentionally_allows_zero_checks(self):
         merger = FakeMerger()
