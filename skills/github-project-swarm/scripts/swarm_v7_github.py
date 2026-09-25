@@ -10,7 +10,7 @@ class GitHubReadError(RuntimeError): pass
 class UnsafeGitHubObservation(RuntimeError): pass
 class AdjudicationExecutionError(UnsafeGitHubObservation): pass
 BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
-_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
+_SHA=re.compile(r"^[0-9a-f]{40}$"); _ACTIONS_JOB=re.compile(r"^https://github\.com/(?P<repo>[^/]+/[^/]+)/actions/runs/(?P<run>\d+)/job/(?P<job>\d+)(?:\?.*)?$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}
 def exact_sha(value):
     if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
     return value
@@ -35,6 +35,7 @@ class GhReader:
         try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
         except json.JSONDecodeError as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}") from exc
         except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
+    def job_log(self,repo,job): return run_command(["gh","run","view","--repo",repo,"--job",str(job),"--log"],timeout=self.timeout_s)
     def graphql(self,query): result=json.loads(run_command(["gh","api","graphql","--paginate","--slurp","-f",f"query={query}"],timeout=self.timeout_s)); return [mapping(row.get("data") if not row.get("errors") else None,"GraphQL data") for row in _rows(result)]
     def list(self,endpoint):
         rows=[]
@@ -92,29 +93,28 @@ def adjudication_publication(config,issue,head,rows):
 def _recover_adjudication(config,issue,head,rows):
     try: return adjudication_publication(config,issue,head,rows)
     except AdjudicationExecutionError: return None,AdjudicationDecision.NONE
-def _rows(value):
-    if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise GitHubReadError("check/status rows are not object lists")
-    return value
-def checks(reader,repo,head):
-    runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return _rows(runs.get("check_runs") or []),_rows(status.get("statuses") or [])
+def _rows(value): return value if isinstance(value,list) and all(isinstance(row,dict) for row in value) else (_ for _ in ()).throw(GitHubReadError("check/status rows are not object lists"))
+def _checkout_heads(log,repo): sections=(part for part in re.split(r"##\[group\]Run ",log)[1:] if part.startswith("actions/checkout@") and f"repository: {repo}" in part); return tuple(head for part in sections for head in re.findall(r"git log -1 --format=%H[^\n]*\n[^\n]*\b([0-9a-f]{40})\b",part))
+def _actions_exact(reader,repo,branch,head,row):
+    match=_ACTIONS_JOB.fullmatch(str(row.get("details_url","")))
+    if not match or match.group("repo")!=repo or type(row.get("id")) is not int or str(row["id"])!=match.group("job"): return False
+    run=mapping(reader.get(f"repos/{repo}/actions/runs/{match.group('run')}"),"workflow run"); return all((str(row.get("head_sha","")).lower()==head,str(run.get("head_sha","")).lower()==head,run.get("head_branch")==branch,run.get("event")=="pull_request",_checkout_heads(reader.job_log(repo,row["id"]),repo)==(head,)))
+def _run_receipt(reader,repo,branch,head,row): app=row.get("app"); slug=str(app.get("slug") if isinstance(app,dict) else "").lower(); return slug!="github-actions" or _actions_exact(reader,repo,branch,head,row)
+def _verify_runs(reader,repo,branch,head,runs): return [row if str(row.get("status")).lower()!="completed" or str(row.get("conclusion")).lower() not in _OK or _run_receipt(reader,repo,branch,head,row) else {**row,"conclusion":None} for row in runs]
+def checks(reader,repo,head,branch):
+    runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return _verify_runs(reader,repo,branch,head,_rows(runs.get("check_runs") or [])),_rows(status.get("statuses") or [])
 def _run_state(runs):
-    if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
-    values={str(row.get("conclusion")).lower() for row in runs}
-    if values&_BAD: return CiState.FAILED
-    return CiState.PASSED if values<=_OK else CiState.PENDING
+    if not runs or not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
+    values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK else CiState.PENDING
 def _status_state(rows):
-    values={str(row.get("state") or "").lower() for row in rows}
-    if values&{"failure","error"}: return CiState.FAILED
-    return CiState.PENDING if "pending" in values else CiState.PASSED
+    values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
 def ci_state(config,raw):
     if not config.ci_required: return CiState.NOT_APPLICABLE
     runs,statuses=raw
     if not runs and not statuses: return CiState.UNKNOWN
     run=_run_state(runs)
     if run is CiState.PENDING: return run
-    states={run,_status_state(statuses)}
-    if CiState.FAILED in states: return CiState.FAILED
-    return CiState.PENDING if CiState.PENDING in states else CiState.PASSED
+    states={run,_status_state(statuses)}; return CiState.FAILED if CiState.FAILED in states else CiState.PENDING if CiState.PENDING in states else CiState.PASSED
 def _labels(value): return {str(row.get("name") if isinstance(row,dict) else row).lower() for row in value} if isinstance(value,list) else set()
 def _same_repo(issue,repo): value=str(issue.get("repository_url") or "").rstrip("/"); return not value or value==f"https://api.github.com/repos/{repo}"
 def _closure_pr_ok(pr,number): return positive_int(pr.get("number"),"PR number")==number and bool(pr.get("merged_at"))
@@ -144,7 +144,7 @@ def _merge_gate(config,pr):
 def _pr_observation(pr,number,head,reviewers,adjudication):
     return PullRequestObservation(number,str(pr.get("html_url") or pr.get("url") or ""),str(pr.get("state") or "").upper(),nested_text(pr,"base","ref"),head,bool(pr.get("draft")),pr.get("mergeable") if isinstance(pr.get("mergeable"),bool) else None,str(pr.get("mergeable_state") or "").upper(),str(pr.get("merged_at")) if pr.get("merged_at") else None,tuple(sorted(_labels(pr.get("labels")))),reviewers,adjudication)
 def _with_pr(config,issue,state,blockers,dependency,pr,reader):
-    head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=_recover_adjudication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
+    head=exact_sha(nested_text(pr,"head","sha")); number=positive_int(pr.get("number"),"PR number"); raw=checks(reader,config.repo,head,nested_text(pr,"head","ref")); reviewers,review_state=review_publications(config,issue,head,reader.list(f"repos/{config.repo}/pulls/{number}/reviews")); adjudication,decision=_recover_adjudication(config,issue,head,reader.list(f"repos/{config.repo}/issues/{number}/comments")); observed=_pr_observation(pr,number,head,reviewers,adjudication); confirmed=observed.merged_at is not None; merged=confirmed and state=="CLOSED"
     if state=="CLOSED" and not confirmed: raise UnsafeGitHubObservation("issue closed without GitHub-confirmed PR mergedAt")
     planner=Observation(issue,merged,dependency,head,ci=ci_state(config,raw),review=review_state,adjudication_decision=decision,merge_gate=_merge_gate(config,observed),merge_confirmed=confirmed); return GitHubIssueObservation(issue,state,blockers,observed,planner)
 def _observe_issue(config,issue,reader):

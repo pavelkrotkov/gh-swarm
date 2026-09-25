@@ -20,7 +20,7 @@ def decision(head, value="accept", ident=10):
 def pr(number, head, *, state="open", merged_at=None, mergeable=True, branch="swarm/test/46"): return {"number":number,"html_url":f"https://github.com/owner/repo/pull/{number}","state":state,"draft":False,"base":{"ref":"main"},"head":{"sha":head,"ref":branch},"mergeable":mergeable,"mergeable_state":"clean" if mergeable else "dirty","merged_at":merged_at,"labels":[]}
 def cross_ref(number): return {"event":"cross-referenced","source":{"issue":{"number":number,"repository_url":"https://api.github.com/repos/owner/repo","pull_request":{"url":f"https://api.github.com/repos/owner/repo/pulls/{number}"}}}}
 class FakeReader:
-    def __init__(self,values=None,error=None): self.values=values or {}; self.error=error; self.calls=[]
+    def __init__(self,values=None,error=None,job_logs=None): self.values=values or {}; self.error=error; self.job_logs=job_logs or {}; self.calls=[]
     def get(self,endpoint):
         self.calls.append(("get",endpoint))
         if self.error: raise gh.GitHubReadError(self.error)
@@ -29,6 +29,16 @@ class FakeReader:
         self.calls.append(("list",endpoint))
         if self.error: raise gh.GitHubReadError(self.error)
         return self.values.get(endpoint,[])
+    def job_log(self,repo,job):
+        self.calls.append(("job_log",repo,job))
+        if self.error: raise gh.GitHubReadError(self.error)
+        return self.job_logs.get(job,"")
+def action_check(head=H2): return {"id":700,"name":"tests","status":"completed","conclusion":"success","head_sha":head,"details_url":"https://github.com/owner/repo/actions/runs/800/job/700","app":{"slug":"github-actions"}}
+def action_run(head=H2,branch="swarm/test/46",event="pull_request"): return {"head_sha":head,"head_branch":branch,"event":event}
+def checkout_log(head): return f"2026-09-25T00:00:00Z ##[group]Run actions/checkout@deadbeef\n2026-09-25T00:00:00Z   repository: owner/repo\n2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
+def ci_reader(checkout=H2,*,row_head=H2,run_head=H2,branch="swarm/test/46",event="pull_request"):
+    values={f"repos/owner/repo/commits/{H2}/check-runs?filter=latest":{"check_runs":[action_check(row_head)]},f"repos/owner/repo/commits/{H2}/status":{"statuses":[]},"repos/owner/repo/actions/runs/800":action_run(run_head,branch,event)}
+    return FakeReader(values,job_logs={700:checkout_log(checkout)})
 class ExactHeadPublicationTests(unittest.TestCase):
     def test_old_head_review_is_ignored(self):
         pubs,state=gh.review_publications(config(),46,H2,[review(1,H1)]); self.assertEqual(pubs,()); self.assertEqual(state,v7.ReviewState.NONE)
@@ -79,6 +89,17 @@ class ReadFailureAndSideEffectTests(unittest.TestCase):
         completed=subprocess.CompletedProcess([],0,stdout="{}",stderr="")
         with patch.object(subprocess,"run",return_value=completed) as run: gh.GhReader().get("repos/owner/repo/issues/46")
         cmd=run.call_args.args[0]; self.assertEqual(cmd[:4],["gh","api","--method","GET"]); self.assertNotIn("mutation"," ".join(cmd).lower())
+class ExactHeadCiTests(unittest.TestCase):
+    def state(self,reader): return gh.ci_state(config(),gh.checks(reader,"owner/repo",H2,"swarm/test/46"))
+    def test_actions_green_requires_actual_exact_head_checkout(self):
+        self.assertEqual(self.state(ci_reader(H2)),v7.CiState.PASSED); self.assertEqual(self.state(ci_reader(H1)),v7.CiState.PENDING); self.assertEqual(gh.ci_state(config(),([],[{"state":"success"}])),v7.CiState.PENDING)
+    def test_stale_base_sibling_and_missing_action_receipts_do_not_pass(self):
+        readers=(ci_reader(H1,row_head=H1,run_head=H1),ci_reader(H2,event="push"),ci_reader(H2,branch="swarm/test/45"),ci_reader(""))
+        for reader in readers:
+            with self.subTest(calls=reader.calls): self.assertEqual(self.state(reader),v7.CiState.PENDING)
+    def test_synthetic_checkout_keeps_planner_waiting_ci(self):
+        reader=ci_reader(H1); reader.values.update({"repos/owner/repo/issues/46":{"number":46,"state":"open"},"repos/owner/repo/issues/46/dependencies/blocked_by":[],"repos/owner/repo/issues/46/timeline":[cross_ref(102)],"repos/owner/repo/pulls/102":pr(102,H2),"repos/owner/repo/pulls/102/reviews":[review(1,H2),review(2,H2)],"repos/owner/repo/issues/102/comments":[decision(H2)]})
+        observed=gh.observe_issue(config(),46,reader); plan=v7.plan_issue(observed.planner,config()); self.assertEqual(observed.planner.ci,v7.CiState.PENDING); self.assertEqual(plan.phase,v7.Phase.WAITING_CI); self.assertIsNone(plan.action)
 class EndToEndObservationTests(unittest.TestCase):
     def test_open_issue_ignores_merged_sibling_cross_reference(self):
         values={"repos/owner/repo/issues/46":{"number":46,"state":"open"},"repos/owner/repo/issues/46/dependencies/blocked_by":[],"repos/owner/repo/issues/46/timeline":[cross_ref(101)],"repos/owner/repo/pulls/101":pr(101,H1,state="closed",merged_at="2026-09-05T12:00:00Z",branch="swarm/test/45")}
