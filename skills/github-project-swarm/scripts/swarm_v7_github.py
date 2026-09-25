@@ -96,7 +96,7 @@ def _rows(value):
     return value
 def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower() in _OK
 def _bind_checkout(reader,repo,head,row):
-    item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or item.get("html_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
+    item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
 def checks(reader,repo,head):
     runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
 def _run_state(runs):
