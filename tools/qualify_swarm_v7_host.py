@@ -99,7 +99,7 @@ class Harness:
             "init", "--repo", self.repo, "--repo-path", str(self.work), "--issues", str(issue),
             "--name", name, "--board", board, "--assignee", assignee, "--worker", self.model, "--reviewer", self.model,
             "--adjudicator", self.model, "--max-execution-attempts", "2", "--max-runtime", "5m",
-            "--ci-mode", "none", "--paused",
+            "--ci-mode", "none", "--merge-policy", "automatic", "--paused",
         )
         line = next((x for x in proc.stdout.splitlines() if x.startswith("Manifest: ")), "")
         if not line:
@@ -241,7 +241,7 @@ def assert_true(value, message: str) -> None:
 def contract_probes(h: Harness) -> None:
     h.run(["hermes", "--version"])
     help_text = h.swarm("--help").stdout
-    for command in ("init", "status", "reconcile", "pause", "resume", "doctor", "validate", "explain", "retire", "prepare", "activate", "disable"):
+    for command in ("init", "status", "reconcile", "pause", "resume", "doctor", "validate", "explain", "retire", "merge-policy", "prepare", "activate", "disable"):
         assert_true(command in help_text, f"hermes swarm --help is missing {command}")
     h.run(["git", "--version"])
     h.run(["hermes", "kanban", "boards", "list", "--json"])

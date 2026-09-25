@@ -1,4 +1,5 @@
 import json, sys, tempfile, unittest
+from dataclasses import replace
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -19,6 +20,20 @@ class CliContractTests(unittest.TestCase):
         with patch.object(cli,"selected",return_value=[Path("demo.json")]),patch.object(cli,"load",return_value=rt),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",planner),patch.object(cli,"apply_plan",return_value=ActionResult("active")) as apply,patch.object(cli,"save"),patch.object(cli,"journal"),redirect_stdout(StringIO()):
             cli.dry_run(name="demo",json_output=True); cli.explain(name="demo",issue=7,json_output=True); self.assertEqual(adapter.watchdog.call_count,0); self.assertEqual(cli.reconcile_runtime(rt),[])
         self.assertEqual(adapter.watchdog.call_count,1); self.assertEqual(planner.call_count,3); self.assertIs(apply.call_args.args[1],item); self.assertEqual(plan_payload(item.plan)["action"],"START_IMPLEMENTATION")
+    def test_merge_policy_command_persists_and_status_reports_it(self):
+        rt=runtime()
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),redirect_stdout(StringIO()):
+            cli.save(rt); args=cli._parser().parse_args(["merge-policy","--name","demo","automatic"]); args.fn(args); saved=cli.load(Path(td)/"demo.json"); row=cli._snapshot(saved,7,planned())
+        self.assertEqual((saved.config.merge_policy,row["merge_policy"]),("automatic","automatic")); self.assertIn("merge=automatic",cli._render(row))
+    def test_merge_action_reloads_policy_and_replans_before_apply(self):
+        rt=runtime(); rt.config=replace(rt.config,merge_policy="automatic"); first=planned()._replace(plan=Plan(Phase.READY_TO_MERGE,Action.MERGE,"eligible","1"*40,"merge")); manual=planned()._replace(plan=Plan(Phase.AWAITING_MANUAL_MERGE,None,"manual merge policy","1"*40,None)); adapter=Mock(); adapter.watchdog.return_value={}
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)):
+            cli.save(rt)
+            def plan(current,_issue):
+                if current.config.merge_policy=="automatic": changed=cli.load(Path(td)/"demo.json"); changed.config=replace(changed.config,merge_policy="manual"); cli.save(changed); return first
+                return manual
+            with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan) as planner,patch.object(cli,"apply_plan",return_value=ActionResult("noop")) as apply,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])
+        self.assertEqual(planner.call_count,2); self.assertEqual(apply.call_args.args[0].config.merge_policy,"manual"); self.assertIs(apply.call_args.args[1],manual)
     def test_retire_persists_reason_and_removes_issue_from_active_scope(self):
         rt=runtime(); adapter=Mock(); adapter.watchdog.return_value={}; adapter.block_issue.return_value=("task-7",)
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),redirect_stdout(StringIO()):

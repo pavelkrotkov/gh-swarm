@@ -7,7 +7,7 @@ from pathlib import Path; import time
 from swarm_v7 import Action, AdjudicationDecision, DependencyState, ExecutionState, ManifestV7, Phase, ReviewState, plan_issue; from swarm_v7_workspace import GitWorkspace, WorkspaceSpec, branch_name, worktree_path
 from swarm_v7_github import GhReader, observe_issue as observe_github; from swarm_v7_kanban import KanbanAdapter, Outcome, TaskSpec, semantic_key, worker_body
 from swarm_v7_merge import GhMerger, request_exact_head_merge; from swarm_v7_review import ExactHeadTarget, _model, reconcile_adjudication, reconcile_reviewers
-_CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused"}; _STARTUP_GRACE_S=300
+_CONFIG={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused","merge_policy"}; _STARTUP_GRACE_S=300
 def _need(ok,message):
     if not ok: raise ValueError(message)
 def _retired(value): _need(isinstance(value,dict),"retired_issues must be a mapping"); _need(all(str(issue).isdigit() and int(issue)>0 and isinstance(reason,str) and bool(reason.strip()) for issue,reason in value.items()),"retired_issues must map positive issue numbers to non-empty reasons"); return {str(issue):reason for issue,reason in value.items()}
