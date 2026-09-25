@@ -94,9 +94,9 @@ def disable(): systemctl("disable","--now",_TIMER,check=False); systemctl("stop"
 def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"observation":observation_payload(planned.observation),"plan":plan_payload(planned.plan)}
 def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); head=f" head={plan['pr_head'][:12]}" if plan.get("pr_head") else ""; return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} {plan['phase']} action={action}{head} — {plan['reason']}"
 def dry_run(*,name=None,all_swarms=False,json_output=False):
-    rows=[]; _timer_health()
-    for path in selected(name=name,all_swarms=all_swarms): runtime=load(path); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)
-    print(json.dumps(rows,ensure_ascii=False,sort_keys=True) if json_output else "\n".join(map(_render,rows)) if rows else "dry-run: no swarms configured")
+    rows=[]; _timer_health(); paths=selected(name=name,all_swarms=all_swarms)
+    for path in paths: runtime=load(path); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)
+    print(json.dumps(rows,ensure_ascii=False,sort_keys=True) if json_output else "\n".join(map(_render,rows)) if rows else "no active issues in selected swarms" if paths else "dry-run: no swarms configured")
 def explain(*,name,issue,json_output=False):
     runtime=load(selected(name=name)[0])
     if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} retired from swarm {runtime.config.swarm_id} [{runtime.config.repo}]: {runtime.retired_issues[str(issue)]}" if str(issue) in runtime.retired_issues else f"issue #{issue} is not configured in swarm {runtime.config.swarm_id}")
@@ -128,7 +128,7 @@ def retire(args):
     with locked(STATE/f".reconcile.{path.stem}.lock"):
         runtime=load(path); issue=args.issue
         if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} is not active in swarm {runtime.config.swarm_id}")
-        runtime.config=replace(runtime.config,issues=tuple(number for number in runtime.config.issues if number!=issue)); runtime.retired_issues[str(issue)]=reason; save(runtime); journal(runtime,issue,None,ActionResult("retired",detail=reason),0)
+        tasks=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).block_issue(runtime.config.swarm_id,issue,f"retired by operator: {reason}"); runtime.config=replace(runtime.config,issues=tuple(number for number in runtime.config.issues if number!=issue)); runtime.retired_issues[str(issue)]=reason; save(runtime); journal(runtime,issue,None,ActionResult("retired",tasks,reason),0)
     print(f"{runtime.config.swarm_id} [{runtime.config.repo}] #{issue}: retired from active scope — {reason}")
 def pause(args,value):
     for path in selected(name=args.name,all_swarms=args.all):
