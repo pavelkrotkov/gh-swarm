@@ -15,7 +15,7 @@ H1 = "1" * 40; H2 = "2" * 40
 def action_check(head=H2,job=99,conclusion="success"): return {"name":"tests","status":"completed","conclusion":conclusion,"head_sha":head,"app":{"slug":"github-actions"},"details_url":f"https://github.com/owner/repo/actions/runs/7/job/{job}"}
 def checkout_log(head): return f"2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
 
-def config(): return v7.ManifestV7(swarm_id="test",repo="owner/repo",default_branch="main",issues=(45,46),worker_model="worker",reviewer_models=("reviewer-a","reviewer-b"),adjudicator_model="adjudicator")
+def config(): return v7.ManifestV7(swarm_id="test",repo="owner/repo",default_branch="main",issues=(45,46),worker_model="worker",reviewer_models=("reviewer-a","reviewer-b"),adjudicator_model="adjudicator",merge_policy="automatic")
 def review(slot, head, native=None, ident=None): return {"id":ident or slot,"body":gh.review_marker("test",46,slot,head),"commit_id":native if native is not None else head,"state":"COMMENTED","submitted_at":"2026-09-12T00:00:00Z"}
 def decision(head, value="accept", ident=10):
     payload=base64.urlsafe_b64encode(json.dumps({"head_sha":head,"decision":value},separators=(",",":")).encode()).decode(); return {"id":ident,"body":gh.adjudication_marker("test",46,head)+f"\n<!-- hermes-swarm-decision-b64:{payload} -->"}

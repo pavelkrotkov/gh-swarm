@@ -11,14 +11,14 @@ from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation
 from swarm_v7_github import GitHubIssueObservation
 from swarm_v7_kanban import Outcome, semantic_key
 LEGACY=("lifecycle.py","observability.py","swarm.py","swarm_v6.py","swarm_legacy.py")
-def runtime(paused=False,issues=(1,2)): return RuntimeManifest(ManifestV7("demo","owner/repo","main",issues,"worker",("r1","r2"),"judge",paused=paused),"/repo","demo","sat-swarm",2,"30m",{})
+def runtime(paused=False,issues=(1,2)): return RuntimeManifest(ManifestV7("demo","owner/repo","main",issues,"worker",("r1","r2"),"judge",paused=paused,merge_policy="automatic"),"/repo","demo","sat-swarm",2,"30m",{})
 def planned(issue=1):
     obs=Observation(issue_number=issue); gh=GitHubIssueObservation(issue,"OPEN",(),None,obs); return PlannedIssue(IssueObservation(gh,obs,{}),Plan(Phase.NEEDS_IMPLEMENTATION,Action.START_IMPLEMENTATION,"reason",None,f"issue:{issue}:intent"))
 class LifecycleTests(unittest.TestCase):
     def test_only_final_v7_runtime_entrypoints_remain(self):
         for name in LEGACY: self.assertFalse((SCRIPTS/name).exists(),name)
         self.assertNotIn("Facade",(SCRIPTS/"swarm_v7_cli.py").read_text())
-    def test_cli_contains_exact_retained_command_surface(self): self.assertEqual(set(cli._parser()._subparsers._group_actions[0].choices),{"init","status","reconcile","pause","resume","doctor","validate","explain","retire","prepare","activate","disable"})
+    def test_cli_contains_exact_retained_command_surface(self): self.assertEqual(set(cli._parser()._subparsers._group_actions[0].choices),{"init","status","reconcile","pause","resume","doctor","validate","explain","retire","merge-policy","prepare","activate","disable"})
     def test_retired_issue_remains_internal_to_github_dependency_observation(self):
         rt=runtime(issues=(2,)); rt.retired_issues={"1":"closed externally"}; github=SimpleNamespace(unsafe_reason="stop",pull_request=None,planner=Observation(2),issue_number=2)
         with patch("swarm_v7_controller.observe_github",return_value=github) as observe: self.assertIs(observe_issue(rt,2).github,github)
@@ -89,7 +89,7 @@ class LifecycleTests(unittest.TestCase):
     def test_remote_exact_head_ci_failure_beats_done_worker_task(self): rt=runtime(issues=(1,)); head="2"*40; rt.cursors[semantic_key(rt.config.swarm_id,1,"implementation")]={"task_id":"task-4","attempt":1}; github=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=head,reviewers=()),planner=Observation(1,pr_head=head,ci=CiState.FAILED)); adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.SUCCESS,status="done",has_run=True,task_id="task-4"); self.assertEqual(plan_issue(_overlay(rt,github,adapter,{}),rt.config).action,Action.START_REVISION); adapter.observe.assert_not_called()
     def test_worker_task_uses_supported_first_failure_retry(self):
         rt=runtime(issues=(1,)); adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.prepare.return_value="1"*40; workspace.ancestor.return_value=False; reader=Mock(); reader.get.return_value={"body":"work"}; item=planned(); ctx=ExecutionContext(rt,item.observation,reader,adapter,workspace,Mock())
-        _worker(ctx,item.plan,False); spec=adapter.create.call_args.args[0]; self.assertEqual(spec.max_retries,1); self.assertEqual(spec.assignee,"sat-swarm"); self.assertEqual(spec.completion_contract,"owner/repo"); self.assertIn("Prepared base SHA: "+"1"*40,spec.body); self.assertIn("merge exact prepared base "+"1"*40,spec.body); self.assertIn("resolve conflicts",spec.body); self.assertIn("all required checks for PUSHED_SHA have completed successfully",spec.body); self.assertIn("prior-head, base-branch, merge-candidate, sibling-PR, and local results do not count",spec.body); self.assertIn("104595",spec.body)
+        _worker(ctx,item.plan,False); spec=adapter.create.call_args.args[0]; self.assertEqual(spec.max_retries,1); self.assertEqual(spec.assignee,"sat-swarm"); self.assertEqual(spec.completion_contract,"owner/repo"); self.assertIn("Prepared base SHA: "+"1"*40,spec.body); self.assertIn("merge exact prepared base "+"1"*40,spec.body); self.assertIn("resolve conflicts",spec.body); self.assertIn("all required checks for PUSHED_SHA have completed successfully",spec.body); self.assertIn("prior-head, base-branch, merge-candidate, sibling-PR, and local results do not count",spec.body); self.assertIn("104595",spec.body); self.assertIn("do not merge",spec.body.lower())
     def test_stale_pr_is_planned_before_ci_and_dependency_gate_wins(self):
         rt=runtime(issues=(1,)); old,base,new="2"*40,"3"*40,"4"*40; gh=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=old,merged_at=None,reviewers=()),planner=Observation(1,pr_head=old,ci=CiState.PENDING),unsafe_reason=None); adapter=Mock(); adapter.create.return_value="task-refresh"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.refresh.return_value=(base,None,old); workspace.prepare.return_value=base; workspace.ancestor.return_value=False; reader=Mock(); reader.get.return_value={"body":"work"}
         with patch("swarm_v7_controller.observe_github",return_value=gh): item=plan_once(rt,1,reader=reader,kanban=adapter,workspace=workspace)
@@ -114,10 +114,10 @@ class LifecycleTests(unittest.TestCase):
         with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once") as plan,self.assertRaisesRegex(RuntimeError,"dispatcher lock busy"): cli.reconcile_runtime(rt)
         plan.assert_not_called()
     def test_paused_init_is_configuration_only(self):
-        args=SimpleNamespace(repo="owner/repo",repo_path="/repo",issues="1",epic=None,name="demo",board=None,assignee="sat-swarm",worker="worker",reviewer=["r1","r2"],adjudicator=None,ci_mode="required",paused=True,max_execution_attempts=2,max_runtime="30m"); reader=Mock(); reader.get.side_effect=[{"number":1,"state":"open"},{"default_branch":"main"}]
+        args=SimpleNamespace(repo="owner/repo",repo_path="/repo",issues="1",epic=None,name="demo",board=None,assignee="sat-swarm",worker="worker",reviewer=["r1","r2"],adjudicator=None,ci_mode="required",merge_policy="automatic",paused=True,max_execution_attempts=2,max_runtime="30m"); reader=Mock(); reader.get.side_effect=[{"number":1,"state":"open"},{"default_branch":"main"}]
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"GhReader",return_value=reader),patch.object(cli,"GitWorkspace") as workspace,patch.object(cli,"KanbanAdapter") as kanban,patch.object(cli,"save") as save:
             cli.init(args)
-        workspace.return_value.validate_binding.assert_called_once_with("owner/repo"); kanban.return_value.create_board.assert_called_once(); save.assert_called_once(); self.assertEqual(save.call_args.args[0].assignee,"sat-swarm")
+        workspace.return_value.validate_binding.assert_called_once_with("owner/repo"); kanban.return_value.create_board.assert_called_once(); save.assert_called_once(); self.assertEqual(save.call_args.args[0].assignee,"sat-swarm"); self.assertEqual(save.call_args.args[0].config.merge_policy,"automatic")
     def test_disable_targets_only_swarm_units(self):
         with patch.object(cli,"systemctl") as systemctl: cli.disable()
         self.assertEqual([call.args for call in systemctl.call_args_list],[("disable","--now","hermes-swarm-reconcile.timer"),("stop","hermes-swarm-reconcile.service")])

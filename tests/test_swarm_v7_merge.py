@@ -17,7 +17,7 @@ def action_check(head=H1,job=99): return {"name":"tests","status":"completed","c
 def checkout_log(head): return f"2026-09-25T00:00:00Z [command]/usr/bin/git log -1 --format=%H\n2026-09-25T00:00:00Z {head}\n"
 
 
-def config(*, ci_required=True, paused=False):
+def config(*, ci_required=True, paused=False, merge_policy="automatic"):
     return v7.ManifestV7(
         swarm_id="test",
         repo="owner/repo",
@@ -28,6 +28,7 @@ def config(*, ci_required=True, paused=False):
         adjudicator_model="judge",
         ci_required=ci_required,
         paused=paused,
+        merge_policy=merge_policy,
     )
 
 
@@ -173,6 +174,12 @@ class MergePredicateTests(unittest.TestCase):
         self.assertEqual(result.state, merge.MergeResultState.REQUESTED)
         self.assertIsNone(result.merged_at)
         self.assertEqual(merger.calls, [("owner/repo", 61, H1)])
+
+    def test_manual_policy_never_grants_merge_without_a_veto_label(self):
+        merger = FakeMerger()
+        with self.assertRaisesRegex(merge.MergeAuthorityError, "merge policy"):
+            merge.request_exact_head_merge(config(merge_policy="manual"), 50, H1, reader_for(), merger)
+        self.assertEqual(merger.calls, [])
 
     def test_local_or_cached_accept_without_github_accept_never_merges(self):
         merger = FakeMerger()
@@ -360,10 +367,10 @@ class RaceAndCompletionTests(unittest.TestCase):
     def test_fresh_merged_at_is_the_only_dependency_release_fact(self):
         merged_at = "2026-09-04T13:31:00Z"
         reader = reader_for(pr_row=pr(state="closed", merged_at=merged_at), issue_extra={"state": "closed"})
-        result = merge.request_exact_head_merge(config(), 50, H1, reader, FakeMerger())
+        result = merge.request_exact_head_merge(config(merge_policy="manual"), 50, H1, reader, FakeMerger())
         self.assertEqual(result.state, merge.MergeResultState.GITHUB_CONFIRMED)
         facts, state = gh._dependency_observation(
-            config(), [{"number": 50, "state": "closed"}], reader
+            config(merge_policy="manual"), [{"number": 50, "state": "closed"}], reader
         )
         self.assertEqual(state, v7.DependencyState.READY)
         self.assertEqual(facts[0].merged_at, merged_at)

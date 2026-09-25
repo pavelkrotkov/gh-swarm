@@ -5,7 +5,7 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).parents[1] / "skills" / "github-project-swarm" / "scripts"; SCRIPT = SCRIPTS / "swarm_v7.py"
 if str(SCRIPTS) not in sys.path: sys.path.insert(0, str(SCRIPTS))
 SPEC = importlib.util.spec_from_file_location("swarm_v7", SCRIPT); v7 = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(v7); H1 = "1" * 40
-def config(*, paused=False, ci_required=True): return v7.ManifestV7(swarm_id="test", repo="owner/repo", default_branch="main", issues=(45,), worker_model="worker", reviewer_models=("reviewer-a","reviewer-b"), adjudicator_model="adjudicator", ci_required=ci_required, paused=paused)
+def config(*, paused=False, ci_required=True, merge_policy="automatic"): return v7.ManifestV7(swarm_id="test", repo="owner/repo", default_branch="main", issues=(45,), worker_model="worker", reviewer_models=("reviewer-a","reviewer-b"), adjudicator_model="adjudicator", ci_required=ci_required, paused=paused, merge_policy=merge_policy)
 def obs(**changes): return replace(v7.Observation(issue_number=45), **changes)
 class PlannerTransitionTests(unittest.TestCase):
     def test_table_covers_every_phase_and_action(self):
@@ -13,6 +13,7 @@ class PlannerTransitionTests(unittest.TestCase):
         phases, actions = set(), set()
         for observation, phase, action in cases:
             plan = v7.plan_issue(observation, config()); self.assertEqual((plan.phase, plan.action),(phase,action)); phases.add(plan.phase); actions |= {plan.action} if plan.action else set()
+        manual=v7.plan_issue(obs(pr_head=H1,ci=v7.CiState.PASSED,review=v7.ReviewState.APPROVED),config(merge_policy="manual")); self.assertEqual((manual.phase,manual.action),(v7.Phase.AWAITING_MANUAL_MERGE,None)); phases.add(manual.phase)
         self.assertEqual(phases,set(v7.Phase)); self.assertEqual(actions,set(v7.Action))
     def test_pause_and_exact_head_intent(self):
         live = v7.plan_issue(obs(pr_head=H1,ci=v7.CiState.PASSED),config()); paused = v7.plan_issue(obs(pr_head=H1,ci=v7.CiState.PASSED),config(paused=True)); self.assertIsNone(paused.action); self.assertEqual(paused.would_action,live.action); self.assertEqual(paused.intent_key,live.intent_key); self.assertTrue(live.intent_key.endswith(H1))
@@ -31,6 +32,9 @@ class ManifestV7Tests(unittest.TestCase):
         raw=config().to_dict(); self.assertEqual(v7.ManifestV7.from_dict(raw),config())
         for key in v7._FORBIDDEN:
             with self.assertRaises(ValueError): v7.ManifestV7.from_dict(raw|{key:{}})
+    def test_merge_policy_migration_and_validation(self):
+        raw=config().to_dict(); legacy=dict(raw); legacy.pop("merge_policy"); self.assertEqual(v7.ManifestV7.from_dict(legacy).merge_policy,"manual")
+        with self.assertRaisesRegex(ValueError,"merge_policy"): v7.ManifestV7.from_dict(raw|{"merge_policy":"unknown"})
     def test_validation_order(self):
         raw=config().to_dict(); models=dict(raw["models"]); models["reviewers"]=[" "]
         with self.assertRaisesRegex(ValueError,r"^models\.reviewers must be a non-empty string$"): v7.ManifestV7.from_dict(raw|{"models":models})
