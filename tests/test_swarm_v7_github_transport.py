@@ -43,6 +43,8 @@ class GhReaderTests(unittest.TestCase):
         with patch.object(process.subprocess, "run", side_effect=subprocess.TimeoutExpired(["gh"], 3)):
             with self.assertRaisesRegex(github.GitHubReadError, "timed out after 3s"):
                 github.GhReader(timeout_s=3).get("repos/o/r")
+            with self.assertRaisesRegex(github.GitHubReadError, "timed out after 3s"):
+                github.GhReader(timeout_s=3).text("repos/o/r/actions/jobs/1/logs")
         with patch.object(process.subprocess, "run", return_value=Result("not-json")):
             with self.assertRaisesRegex(github.GitHubReadError, "invalid JSON"):
                 github.GhReader().get("repos/o/r")
