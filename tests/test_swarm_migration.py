@@ -36,8 +36,8 @@ class MigrationTests(unittest.TestCase):
         self.assertIn(("hermes","swarm","merge-policy","--name","demo","automatic"),commands); self.assertIn(("hermes","swarm","validate","--name","demo"),commands); self.assertIn(("hermes","swarm","resume","--name","demo"),commands); self.assertIn(("hermes","swarm","reconcile","--name","demo"),commands); self.assertIn(("hermes","swarm","activate"),commands); self.assertEqual(got["backup"],"/backup")
     def test_journal_slice_uses_byte_offset_with_utf8_history(self):
         with tempfile.TemporaryDirectory() as td,patch.dict(os.environ,{"HERMES_SWARM_STATE_DIR":td}):
-            path=Path(td,"demo.journal.jsonl"); path.write_text(json.dumps({"detail":"café"},ensure_ascii=False)+"\\n",encoding="utf-8"); offset=path.stat().st_size
-            with open(path,"a",encoding="utf-8") as out: out.write(json.dumps({"issue":1,"intent_key":"new"})+"\\n")
+            path=Path(td,"demo.journal.jsonl"); path.write_text(json.dumps({"detail":"café"},ensure_ascii=False)+"\n",encoding="utf-8"); offset=path.stat().st_size
+            with open(path,"a",encoding="utf-8") as out: out.write(json.dumps({"issue":1,"intent_key":"new"})+"\n")
             self.assertEqual(migration.new_journal("demo",offset),[{"issue":1,"intent_key":"new"}])
     def test_duplicate_proof_rejects_worker_and_merge_replays(self):
         rows=[{"action":"merge","outcome":"requested","intent_key":"m1"},{"action":"merge","outcome":"requested","intent_key":"m1"}]
