@@ -74,6 +74,7 @@ class HostQualificationTests(unittest.TestCase):
         self.assertIn('["git", "init", "--bare"', runner)
         self.assertIn('"--max-retries", "1"', runner)
         self.assertIn('"--assignee", assignee', runner)
+        self.assertIn('"--completion-contract", "owner/repo"', runner); self.assertIn("qualification probe did not persist completion contract", runner)
         self.assertIn("dispatcher did not create a worker run", runner)
         self.assertIn('"comment_dispositions": [], "required_changes": []', runner)
         self.assertIn("durable adjudication did not converge to merge", runner)

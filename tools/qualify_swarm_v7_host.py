@@ -246,7 +246,7 @@ def contract_probes(h: Harness) -> None:
     h.run(["git", "--version"])
     h.run(["hermes", "kanban", "boards", "list", "--json"])
     create_help = h.run(["hermes", "kanban", "create", "--help"]).stdout
-    for flag in ("--body", "--workspace", "--branch", "--idempotency-key", "--max-retries", "--max-runtime", "--assignee", "--model"):
+    for flag in ("--body", "--workspace", "--branch", "--completion-contract", "--idempotency-key", "--max-retries", "--max-runtime", "--assignee", "--model"):
         assert_true(flag in create_help, f"Hermes Kanban create contract missing {flag}")
     head="1"*40; marker=f"<!-- hermes-swarm-adjudication:s:1:{head} -->"; body=(ROOT/"skills/github-project-swarm/references/swarm_v7_adjudicator_runtime.txt").read_text().format(repo="owner/repo",pr_number=1,head=head,head_repr=repr(head),marker=marker)
     verify=next((line.strip("`") for line in body.splitlines() if line.startswith("`gh api ")), ""); assert_true(bool(verify), "adjudicator runtime has no headless verification command")
@@ -258,7 +258,7 @@ def contract_probes(h: Harness) -> None:
     args = [
         "create", "qualification contract probe", "--body", "no execution", "--workspace", f"dir:{h.work}",
         "--triage", "--idempotency-key", f"qualification:{uuid.uuid4().hex}", "--max-retries", "1",
-        "--max-runtime", "1m", "--model", h.model, "--json",
+        "--max-runtime", "1m", "--completion-contract", "owner/repo", "--model", h.model, "--json",
     ]
     first = json.loads(h.kanban(probe, *args).stdout)
     second = json.loads(h.kanban(probe, *args).stdout)
@@ -266,6 +266,8 @@ def contract_probes(h: Harness) -> None:
     second_id = str(second.get("task", second).get("id") or second.get("task", second).get("task_id"))
     assert_true(first_id and first_id == second_id, "Hermes Kanban idempotency contract failed")
     assert_true(h.task_status(probe, first_id) == "triage", "qualification probe did not preserve triage status")
+    shown = json.loads(h.kanban(probe, "show", first_id, "--json").stdout); task = shown.get("task", shown)
+    assert_true(task.get("completion_contract") == "owner/repo", "qualification probe did not persist completion contract")
     h.kanban(probe, "runs", first_id, "--json")
     h.kanban(probe, "archive", first_id)
 

@@ -21,6 +21,7 @@ The create help must expose every flag the adapter uses:
 --body
 --workspace
 --branch
+--completion-contract
 --idempotency-key
 --max-retries
 --max-runtime
@@ -38,6 +39,14 @@ hermes kanban --board BOARD show TASK --json
 ```
 
 Command execution reuses the repository's shared bounded subprocess runner rather than maintaining a second process implementation.
+
+## Completion-contract mapping
+
+Swarm makes the Kanban completion policy explicit on every card. Implementation and revision cards publish or update a PR, so their contract is the configured `OWNER/REPO`. Reviewer and adjudication cards publish review evidence but do not own the PR implementation, so they remain `local-only`.
+
+Hermes machine-enforces the repository contract at task completion against the published PR's exact current head and required checks. This complements, rather than replaces, the controller's independent GitHub observations.
+
+Cards created before this mapping retain their stored `local-only` contract; idempotent create does not rewrite an existing card. Block an affected implementation/revision card and reconcile the swarm. The bounded retry advances to a fresh attempt key (for example `:a2`), whose new card carries the repository contract. Preserve any durable branch/PR publication: GitHub artifacts remain authoritative and should not be recreated merely to recover the card contract.
 
 ## Task response contract
 
