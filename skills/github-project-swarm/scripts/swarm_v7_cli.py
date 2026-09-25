@@ -3,7 +3,7 @@
 # Local state never supplies semantic workflow truth; GitHub is re-observed by plan_once.
 # Writes are atomic/fsynced, reconcile is flock-serialized, and the journal is diagnostics.
 # Service administration controls only swarm units and never touches the Hermes gateway.
-import argparse, errno, json, os, re, shlex, sys, tempfile, time, uuid; from contextlib import contextmanager; from dataclasses import replace; from pathlib import Path; from types import SimpleNamespace; from swarm_v7 import Action, ManifestV7; from swarm_v7_cli_process import run_command, subprocess_timeout; from swarm_v7_controller import ActionResult, RuntimeManifest, apply_plan, observation_payload, plan_once, plan_payload; from swarm_v7_github import GhReader; from swarm_v7_kanban import KanbanAdapter; from swarm_v7_workspace import GitWorkspace
+import argparse, errno, json, os, re, shlex, sys, tempfile, time, uuid; from contextlib import contextmanager; from dataclasses import replace; from pathlib import Path; from types import SimpleNamespace; from swarm_v7 import Action, ManifestV7; from swarm_v7_cli_process import run_command, subprocess_timeout; from swarm_v7_controller import ActionResult, RuntimeManifest, apply_plan, observation_payload, plan_once, plan_payload; from swarm_v7_github import GhReader; from swarm_v7_kanban import KanbanAdapter; from swarm_v7_merge import MergeRequestError; from swarm_v7_workspace import GitWorkspace
 try: import fcntl
 except ImportError: fcntl=None
 HOME=Path(os.environ.get("HERMES_HOME",Path.home()/".hermes")).expanduser(); STATE=Path(os.environ.get("HERMES_SWARM_STATE_DIR",HOME/"swarms")).expanduser(); _REQUIRED=("ponytail","github-project-reviewer","github-project-adjudicator","github-project-swarm"); _TIMER="hermes-swarm-reconcile.timer"; _SERVICE="hermes-swarm-reconcile.service"; _SUMMARY=("success","partial_failure")
@@ -47,7 +47,7 @@ def _merge_attribution(runtime,issue,planned):
     if pr is None: return None
     path=STATE/f"{runtime.config.swarm_id}.journal.jsonl"; rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines(keepends=True) if line.endswith("\n")] if path.exists() else []; matches=list(filter(lambda row:(row.get("issue"),row.get("pr"),row.get("head"))==(issue,pr.number,pr.head),rows))
     intent=next(filter(lambda row:row.get("event")=="merge_intent",reversed(matches)),None); cid=(intent or {}).get("correlation_id"); outcome=next(filter(lambda row:(row.get("event"),row.get("correlation_id"))==("merge_outcome",cid),reversed(matches)),None); value=(outcome or {}).get("merge_outcome")
-    state={(False,False,None):"none",(True,False,None):"observed_external",(True,True,None):"confirmed_after_unknown_request_outcome",(True,True,"requested"):"controller_request_confirmed",(True,True,"github_confirmed"):"controller_request_confirmed",(True,True,"rejected"):"observed_external_after_rejected_request",(False,True,None):"outcome_unknown",(False,True,"requested"):"request_attempted",(False,True,"rejected"):"request_rejected"}.get((bool(pr.merged_at),bool(intent),value))
+    state={(False,False,None):"none",(True,False,None):"observed_external",(True,True,None):"confirmed_after_unknown_request_outcome",(True,True,"unknown"):"confirmed_after_unknown_request_outcome",(True,True,"requested"):"controller_request_confirmed",(True,True,"github_confirmed"):"controller_request_confirmed",(True,True,"rejected"):"observed_external_after_rejected_request",(False,True,None):"outcome_unknown",(False,True,"unknown"):"outcome_unknown",(False,True,"requested"):"request_attempted",(False,True,"rejected"):"request_rejected"}.get((bool(pr.merged_at),bool(intent),value))
     return {"state":state,"correlation_id":cid,"request_outcome":value,"merged_at":pr.merged_at,"merge_sha":getattr(pr,"merge_sha",None)}
 def _receipt(runtime,planned,outcome): pr=planned.observation.github.pull_request; planner=planned.observation.planner; return {"pr":pr.number,"head":pr.head,"policy":runtime.config.merge_policy,"gate_evidence":{"pr_url":pr.url,"issue_state":planned.observation.github.issue_state,"dependency":planner.dependency.value,"ci":planner.ci.value,"review":planner.review.value,"adjudication":planner.adjudication_decision.value,"merge_gate":planner.merge_gate.value,"base_current":planner.base_current,"blockers":observation_payload(planned.observation,runtime.config)["gates"]},"merge_outcome":outcome}
 def _apply_with_receipt(runtime,planned,correlation_id):
@@ -55,7 +55,7 @@ def _apply_with_receipt(runtime,planned,correlation_id):
     if not request: return apply_plan(runtime,planned)
     journal(runtime,planned.observation.github.issue_number,planned,None,0,correlation_id=correlation_id,event="merge_intent",receipt=_receipt(runtime,planned,"intent"))
     try: result=apply_plan(runtime,planned)
-    except Exception as exc: journal(runtime,planned.observation.github.issue_number,planned,None,0,exc,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,"rejected")); raise
+    except Exception as exc: journal(runtime,planned.observation.github.issue_number,planned,None,0,exc,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,"rejected" if isinstance(exc,MergeRequestError) else "unknown")); raise
     journal(runtime,planned.observation.github.issue_number,planned,result,0,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,result.outcome)); return result
 def _reconcile_context(correlation_id,rows): return correlation_id or uuid.uuid4().hex,[] if rows is None else rows
 def _model(value):
@@ -121,15 +121,15 @@ def reconcile_runtime(runtime,correlation_id=None,rows=None):
     return errors
 def reconcile(args):
     if args.dry_run: return dry_run(name=args.name,all_swarms=args.all,json_output=args.json)
-    correlation_id=uuid.uuid4().hex; errors=[]; swarms=[]
+    correlation_id=uuid.uuid4().hex; errors=[]; swarms=[]; partial=False
     for path in selected(name=args.name,all_swarms=args.all):
         summary={"swarm":path.stem,"status":"success","issues":[],"errors":[]}
         try:
             with locked(STATE/f".reconcile.{path.stem}.lock",nonblocking=True): current=reconcile_runtime(load(path),correlation_id=correlation_id,rows=summary["issues"]); errors.extend(current); summary["errors"].extend(current); summary["status"]=_SUMMARY[bool(current)]
-        except BlockingIOError: summary["status"]="skipped_busy"; print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
+        except BlockingIOError: summary["status"]="skipped_busy"; partial=True; print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
         except Exception as exc: error=f"{path.stem}: {exc}"; errors.append(error); summary["errors"].append(error); summary["status"]="partial_failure"
         swarms.append(summary)
-    if args.json: print(json.dumps({"correlation_id":correlation_id,"status":_SUMMARY[bool(errors)],"swarms":swarms},ensure_ascii=False,sort_keys=True))
+    if args.json: print(json.dumps({"correlation_id":correlation_id,"status":_SUMMARY[max(bool(errors),partial)],"swarms":swarms},ensure_ascii=False,sort_keys=True))
     if errors: raise RuntimeError("reconciliation encountered errors:\n"+"\n".join(errors))
 def retire(args):
     reason=args.reason.strip(); path=selected(name=args.name)[0]

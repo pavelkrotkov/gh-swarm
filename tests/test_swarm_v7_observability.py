@@ -1,5 +1,5 @@
 import json, sys, tempfile, unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,11 +27,15 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         args=cli._parser().parse_args(["status","--name","demo","--json"]); self.assertTrue(args.json)
     def test_merge_receipts_distinguish_rejected_unknown_controller_and_external_outcomes(self):
         rt=runtime(); candidate=planned(rt)
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"apply_plan",side_effect=RuntimeError("rejected by GitHub")):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"apply_plan",side_effect=merge.MergeRequestError("rejected by GitHub")):
             with self.assertRaisesRegex(RuntimeError,"rejected"): cli._apply_with_receipt(rt,candidate,"cid-1")
             path=Path(td)/"demo.journal.jsonl"; events=[json.loads(line) for line in path.read_text().splitlines()]
             self.assertEqual([row["event"] for row in events],["merge_intent","merge_outcome"]); self.assertEqual({row["correlation_id"] for row in events},{"cid-1"}); self.assertEqual((events[0]["pr"],events[0]["head"],events[0]["policy"]),(61,H1,"automatic")); self.assertEqual(events[1]["merge_outcome"],"rejected"); self.assertEqual(events[0]["gate_evidence"]["ci"],"PASSED")
-            requested=dict(events[1]); requested.update(outcome="requested",error=None,merge_outcome="requested"); path.write_text("\n".join(map(json.dumps,(events[0],requested)))+"\n"); pr=candidate.observation.github.pull_request; pr.merged_at="2026-09-25T23:00:00Z"; pr.merge_sha=M1
+            path.unlink()
+            with patch.object(cli,"apply_plan",side_effect=RuntimeError("post-request cleanup failed")):
+                with self.assertRaisesRegex(RuntimeError,"cleanup"): cli._apply_with_receipt(rt,candidate,"cid-2")
+            unknown_events=[json.loads(line) for line in path.read_text().splitlines()]; self.assertEqual(unknown_events[-1]["merge_outcome"],"unknown"); pr=candidate.observation.github.pull_request; pr.merged_at="2026-09-25T23:00:00Z"; pr.merge_sha=M1; self.assertEqual(cli._merge_attribution(rt,7,candidate)["state"],"confirmed_after_unknown_request_outcome")
+            requested=dict(events[1]); requested.update(outcome="requested",error=None,merge_outcome="requested"); path.write_text("\n".join(map(json.dumps,(events[0],requested)))+"\n")
             self.assertEqual(cli._merge_attribution(rt,7,candidate)["state"],"controller_request_confirmed")
             path.write_text(json.dumps(events[0])+"\n"); unknown=cli._merge_attribution(rt,7,candidate); self.assertEqual((unknown["state"],unknown["merge_sha"]),("confirmed_after_unknown_request_outcome",M1))
             pr.head=H2; self.assertEqual(cli._merge_attribution(rt,7,candidate)["state"],"observed_external")
@@ -48,4 +52,8 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         with patch.object(cli,"selected",return_value=[Path("a.json"),Path("b.json")]),patch.object(cli,"locked",return_value=MagicMock()),patch.object(cli,"load",return_value=rt),patch.object(cli,"reconcile_runtime",side_effect=run),redirect_stdout(out):
             with self.assertRaisesRegex(RuntimeError,"injected"): cli.reconcile(args)
         payload=json.loads(out.getvalue()); self.assertEqual(payload["status"],"partial_failure"); self.assertEqual([row["status"] for row in payload["swarms"]],["partial_failure","success"]); self.assertEqual([row["issues"][0]["issue"] for row in payload["swarms"]],[7,7]); self.assertEqual(set(calls),{payload["correlation_id"]})
+    def test_busy_swarm_marks_aggregate_partial_without_fabricating_error(self):
+        args=SimpleNamespace(dry_run=False,json=True,all=True,name=None); busy=MagicMock(); busy.__enter__.side_effect=BlockingIOError; out=StringIO()
+        with patch.object(cli,"selected",return_value=[Path("a.json")]),patch.object(cli,"locked",return_value=busy),redirect_stdout(out),redirect_stderr(StringIO()): cli.reconcile(args)
+        payload=json.loads(out.getvalue()); self.assertEqual(payload["status"],"partial_failure"); self.assertEqual(payload["swarms"][0]["status"],"skipped_busy"); self.assertEqual(payload["swarms"][0]["errors"],[])
 if __name__=="__main__": unittest.main()
