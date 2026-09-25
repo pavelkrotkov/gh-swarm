@@ -33,7 +33,7 @@ class GhReader:
         self.timeout_s=timeout_s
     def get(self,endpoint):
         try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
-        except (json.JSONDecodeError,RuntimeError) as exc: raise GitHubReadError(f"GitHub read failed for {endpoint}: {exc}") from exc
+        except (json.JSONDecodeError,RuntimeError) as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}" if isinstance(exc,json.JSONDecodeError) else str(exc)) from exc
     def text(self,endpoint): return run_command(["gh","api","--method","GET",endpoint],timeout=self.timeout_s)
     def graphql(self,query): result=json.loads(run_command(["gh","api","graphql","--paginate","--slurp","-f",f"query={query}"],timeout=self.timeout_s)); return [mapping(row.get("data") if not row.get("errors") else None,"GraphQL data") for row in _rows(result)]
     def list(self,endpoint):
