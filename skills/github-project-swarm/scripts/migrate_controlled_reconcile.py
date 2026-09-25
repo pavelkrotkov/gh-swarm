@@ -50,6 +50,7 @@ def preflight(name,runner=run_cmd,probe=lock_free):
 
 def _require_ready(report,*,lock=False):
     if not all(report["capabilities"].values()): raise RuntimeError("native merge-policy/completion-contract capability is missing")
+    if report["manifest"].get("paused") is not True: raise RuntimeError("migration requires the target schema-7 manifest to be paused")
     if lock and not report["lock_free"]: raise RuntimeError("swarm reconcile lock is busy")
 
 def wait_quiescent(name,runner=run_cmd,sleep=time.sleep,probe=lock_free,timeout=180):
@@ -80,7 +81,7 @@ def _dry_run(name,runner):
 def _new_journal(name,before,issues,sleep,timeout):
     deadline=time.monotonic()+timeout
     while True:
-        rows=_journal(name)[before:]; seen={int(row["issue"]) for row in rows if row.get("issue") is not None}
+        rows=_journal(name)[before:]; seen={int(row.get("issue")) for row in rows if row.get("issue") is not None}
         if not issues or set(map(int,issues))<=seen: return rows
         if time.monotonic()>=deadline: return rows
         sleep(0.2)
@@ -103,11 +104,13 @@ def _verify_journal(rows,issues):
 def _verify(name,before,runner,sleep=time.sleep,timeout=180):
     _,raw,board=_manifest(name); _verify_tasks(board,runner); _verify_journal(_new_journal(name,before,raw.get("issues") or [],sleep,timeout),raw.get("issues") or [])
 
+def _timer_ready(state): return state.get("ActiveState") in ACTIVE and state.get("UnitFileState") in {"enabled","enabled-runtime"}
+
 def _verify_final(name,policy,legacy_timer,report):
     _,raw,_=_manifest(name)
     if raw.get("paused") or raw.get("merge_policy")!=policy: raise RuntimeError("native manifest read-back does not match requested active policy")
-    legacy=report["units"][legacy_timer].get("ActiveState"); standard=report["units"]["hermes-swarm-reconcile.timer"].get("ActiveState")
-    if legacy in ACTIVE or standard not in ACTIVE: raise RuntimeError("timer read-back does not show legacy quiesced and standard timer active")
+    units=report["units"]; legacy=units[legacy_timer]; service=units[legacy_timer.removesuffix(".timer")+".service"]
+    if legacy.get("ActiveState") in ACTIVE or legacy.get("UnitFileState") in {"enabled","enabled-runtime"} or service.get("ActiveState") in ACTIVE or not _timer_ready(units["hermes-swarm-reconcile.timer"]): raise RuntimeError("scheduler read-back does not show legacy quiesced and standard timer active/enabled")
 
 def _pause(name,runner):
     try: runner(["hermes","swarm","pause","--name",name]); return None
@@ -115,10 +118,11 @@ def _pause(name,runner):
 
 def migrate(name,policy,legacy_script,*,runner=run_cmd,sleep=time.sleep,probe=lock_free,timeout=180):
     if timeout<=0: raise ValueError("timeout must be positive")
-    report=preflight(name,runner,probe); _require_ready(report); legacy_timer=f"{name}-controlled-reconcile.timer"; runner(["systemctl","--user","disable","--now",legacy_timer]); wait_quiescent(name,runner,sleep,probe,timeout); report=preflight(name,runner,probe); _require_ready(report,lock=True); saved=backup(name,legacy_script,report); before=len(_journal(name)); standard_was_active=report["units"]["hermes-swarm-reconcile.timer"].get("ActiveState") in ACTIVE
+    report=preflight(name,runner,probe); _require_ready(report); legacy_timer=f"{name}-controlled-reconcile.timer"; runner(["systemctl","--user","disable","--now",legacy_timer])
     try:
+        wait_quiescent(name,runner,sleep,probe,timeout); report=preflight(name,runner,probe); _require_ready(report,lock=True); saved=backup(name,legacy_script,report); before=len(_journal(name)); standard_was_ready=_timer_ready(report["units"]["hermes-swarm-reconcile.timer"])
         runner(["hermes","swarm","pause","--name",name]); runner(["hermes","swarm","merge-policy","--name",name,policy]); runner(["hermes","swarm","validate","--name",name]); _dry_run(name,runner); runner(["hermes","swarm","resume","--name",name]); runner(["hermes","swarm","reconcile","--name",name]); _verify(name,before,runner,sleep,timeout)
-        if not standard_was_active: runner(["hermes","swarm","activate"])
+        if not standard_was_ready: runner(["hermes","swarm","activate"])
         final=preflight(name,runner,probe); _verify_final(name,policy,legacy_timer,final); return {"backup":str(saved),"preflight":report,"final":final}
     except Exception as exc:
         pause_error=_pause(name,runner); suffix=f"; rollback pause failed: {pause_error}" if pause_error else "; target swarm left paused; legacy controller remains disabled"

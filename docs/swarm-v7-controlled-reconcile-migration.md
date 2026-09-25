@@ -16,7 +16,7 @@ The JSON report records the resolved controller release and Hermes version, nati
 
 ## Cut over research-fabric
 
-Use `--apply` only after inspecting preflight. The policy is intentionally mandatory:
+Use `--apply` only after inspecting preflight. The target manifest must still be `paused=true`, matching the workaround's fail-closed on-disk state; otherwise apply refuses to start. The policy is intentionally mandatory:
 
 ```bash
 python "$RUNTIME/skills/github-project-swarm/scripts/migrate_controlled_reconcile.py" \
@@ -28,7 +28,7 @@ python "$RUNTIME/skills/github-project-swarm/scripts/migrate_controlled_reconcil
 
 The helper disables only `research-fabric-controlled-reconcile.timer`. If its service is already running, it is allowed to finish; the helper waits for that service and the native per-swarm lock instead of killing either. It then backs up the manifest, journal, exact legacy script, and the two known legacy unit files under `$HERMES_HOME/swarm-migration-backups/`.
 
-All controller changes after that use supported commands: native `pause`, `merge-policy`, `validate`, dry-run reconciliation, `resume`, and one real `reconcile`. The dry-run must have no unsafe GitHub/execution observation before resume. Post-pass verification rejects duplicate Kanban idempotency keys, reconciliation errors, a missing active-issue journal pass, or duplicate exact-head merge actions. If the global timer was not already active, native `hermes swarm activate` enables it only after that pass succeeds.
+All controller changes after that use supported commands: native `pause`, `merge-policy`, `validate`, dry-run reconciliation, `resume`, and one real `reconcile`. The dry-run must have no unsafe GitHub/execution observation before resume. Post-pass verification rejects duplicate Kanban idempotency keys, reconciliation errors, a missing active-issue journal pass, or duplicate exact-head merge actions. If the global timer was not already both active and enabled, native `hermes swarm activate` enables it only after that pass succeeds. Final read-back requires the legacy timer disabled/inactive, its service inactive, and the global timer active/enabled.
 
 Any cutover failure best-effort pauses the target swarm and leaves the legacy timer disabled. It never restores the unsafe dual-controller state. The backup, Kanban task/cursor evidence, journal, and GitHub PR evidence remain available for diagnosis and a later rerun.
 

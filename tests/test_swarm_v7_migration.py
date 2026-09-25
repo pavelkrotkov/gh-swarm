@@ -4,12 +4,12 @@ from unittest.mock import patch
 ROOT=Path(__file__).parents[1]; MODULE=ROOT/"skills/github-project-swarm/scripts/migrate_controlled_reconcile.py"; spec=importlib.util.spec_from_file_location("migration",MODULE); migration=importlib.util.module_from_spec(spec); spec.loader.exec_module(migration)
 
 class FakeHost:
-    def __init__(self,state,fail=None): self.state=state; self.fail=fail; self.calls=[]; self.legacy_states=[]; self.standard_active=True; self.tasks=[{"id":"t1","status":"running","title":"worker","idempotency_key":"k1"}]
+    def __init__(self,state,fail=None): self.state=state; self.fail=fail; self.calls=[]; self.legacy_states=[]; self.standard_active=True; self.standard_enabled=True; self.tasks=[{"id":"t1","status":"running","title":"worker","idempotency_key":"k1"}]
     def __call__(self,cmd,check=True):
         self.calls.append(tuple(cmd)); joined=" ".join(cmd)
         if self.fail and self.fail in joined: raise RuntimeError("injected failure")
         if cmd[:3]==["systemctl","--user","show"]:
-            unit=cmd[3]; legacy=self.legacy_states.pop(0) if unit.endswith("controlled-reconcile.service") and self.legacy_states else "inactive"; active="active" if unit=="hermes-swarm-reconcile.timer" and self.standard_active else legacy if unit.endswith("controlled-reconcile.service") else "inactive"; return f"LoadState=loaded\nActiveState={active}\nUnitFileState={'enabled' if active=='active' else 'disabled'}\n"
+            unit=cmd[3]; legacy=self.legacy_states.pop(0) if unit.endswith("controlled-reconcile.service") and self.legacy_states else "inactive"; active="active" if unit=="hermes-swarm-reconcile.timer" and self.standard_active else legacy if unit.endswith("controlled-reconcile.service") else "inactive"; enabled=unit=="hermes-swarm-reconcile.timer" and self.standard_enabled; return f"LoadState=loaded\nActiveState={active}\nUnitFileState={'enabled' if enabled else 'disabled'}\n"
         if cmd[:4]==["systemctl","--user","disable","--now"]: return ""
         if cmd==["hermes","swarm","--help"]: return "merge-policy reconcile validate"
         if cmd[:3]==["hermes","kanban","--board"] and cmd[-2:]==["create","--help"]: return "--completion-contract"
@@ -24,7 +24,7 @@ class FakeHost:
             with open(self.state/"demo.journal.jsonl","a",encoding="utf-8") as out:
                 for issue in raw["issues"]: out.write(json.dumps({"issue":issue,"action":"start_implementation","pr_head":None,"error":None})+"\n")
             return ""
-        if cmd[:3]==["hermes","swarm","activate"]: self.standard_active=True; return "activated\n"
+        if cmd[:3]==["hermes","swarm","activate"]: self.standard_active=True; self.standard_enabled=True; return "activated\n"
         if cmd[:3]==["hermes","swarm","validate"]: return "validate: ok\n"
         return ""
     def _manifest(self,**changes):
@@ -38,10 +38,11 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as runtime:
             state=Path(td); manifest(state); (Path(runtime)/"current").mkdir(); host=FakeHost(state)
             with patch.object(migration,"STATE",state),patch.object(migration,"RUNTIME_ROOT",Path(runtime)): report=migration.preflight("demo",host,lambda _:True)
-        self.assertEqual(report["capabilities"],{"merge_policy":True,"completion_contract":True}); self.assertEqual(report["manifest"]["merge_policy"],"manual"); self.assertEqual(report["in_flight"][0]["id"],"t1"); self.assertEqual(report["units"]["hermes-swarm-reconcile.timer"]["ActiveState"],"active")
+        self.assertEqual(report["capabilities"],{"merge_policy":True,"completion_contract":True}); self.assertEqual(report["manifest"]["merge_policy"],"manual"); self.assertEqual(report["in_flight"][0]["id"],"t1"); self.assertEqual(report["units"]["hermes-swarm-reconcile.timer"]["ActiveState"],"active"); report["manifest"]["paused"]=False
+        with self.assertRaisesRegex(RuntimeError,"to be paused"): migration._require_ready(report)
     def test_apply_uses_native_cutover_and_keeps_evidence(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as runtime:
-            state=Path(td); manifest(state); script=state/"controlled_reconcile.py"; script.write_text("legacy\n"); (Path(runtime)/"current").mkdir(); host=FakeHost(state); host.standard_active=False; host.legacy_states=["active","active","inactive"]; probes={"count":0}
+            state=Path(td); manifest(state); script=state/"controlled_reconcile.py"; script.write_text("legacy\n"); (Path(runtime)/"current").mkdir(); host=FakeHost(state); host.standard_enabled=False; host.legacy_states=["active","active","inactive"]; probes={"count":0}
             def probe(_): probes["count"]+=1; return probes["count"]>1
             with patch.object(migration,"STATE",state),patch.object(migration,"HOME",Path(home)),patch.object(migration,"UNIT_DIR",state),patch.object(migration,"RUNTIME_ROOT",Path(runtime)):
                 result=migration.migrate("demo","automatic",script,runner=host,sleep=lambda _:None,probe=probe); backup=Path(result["backup"]); self.assertTrue((backup/"demo.json").exists()); self.assertTrue((backup/"controlled_reconcile.py").exists())
