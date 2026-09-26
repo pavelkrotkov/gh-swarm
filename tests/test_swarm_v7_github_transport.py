@@ -33,6 +33,14 @@ class GhReaderTests(unittest.TestCase):
         self.assertNotIn("DELETE", cmd)
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
 
+    def test_ansi_log_is_captured_not_printed(self):
+        log = "\x1b[32mcheckout\x1b[0m\n"
+        with patch.object(process.subprocess, "run", return_value=Result(log)) as run:
+            self.assertEqual(github.GhReader(timeout_s=7).text("repos/o/r/actions/jobs/1/logs"), log.strip())
+        self.assertIn("--allow-escape-sequences", run.call_args.args[0])
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
     def test_graphql_uses_native_bounded_pagination(self):
         payload=json.dumps([{"data":{"ok":1}},{"data":{"ok":2}}])
         with patch.object(process.subprocess,"run",return_value=Result(payload)) as run:
