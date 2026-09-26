@@ -3,20 +3,10 @@
 # Local state never supplies semantic workflow truth; GitHub is re-observed by plan_once.
 # Writes are atomic/fsynced, reconcile is flock-serialized, and the journal is diagnostics.
 # Service administration controls only swarm units and never touches the Hermes gateway.
-import argparse, errno, json, os, re, shlex, sys, tempfile, time
-from contextlib import contextmanager
-from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
-from swarm_v7 import Action, ManifestV7
-from swarm_v7_cli_process import run_command, subprocess_timeout
-from swarm_v7_controller import ActionResult, RuntimeManifest, apply_plan, observation_payload, plan_once, plan_payload
-from swarm_v7_github import GhReader
-from swarm_v7_kanban import KanbanAdapter
-from swarm_v7_workspace import GitWorkspace
+import argparse, errno, json, os, re, shlex, sys, tempfile, time, uuid; from contextlib import contextmanager; from dataclasses import replace; from pathlib import Path; from types import SimpleNamespace; from swarm_v7 import Action, ManifestV7; from swarm_v7_cli_process import run_command, subprocess_timeout; from swarm_v7_controller import ActionResult, RuntimeManifest, apply_plan, observation_payload, plan_once, plan_payload; from swarm_v7_github import GhReader; from swarm_v7_kanban import KanbanAdapter; from swarm_v7_merge import MergeRequestError; from swarm_v7_workspace import GitWorkspace
 try: import fcntl
 except ImportError: fcntl=None
-HOME=Path(os.environ.get("HERMES_HOME",Path.home()/".hermes")).expanduser(); STATE=Path(os.environ.get("HERMES_SWARM_STATE_DIR",HOME/"swarms")).expanduser(); _REQUIRED=("ponytail","github-project-reviewer","github-project-adjudicator","github-project-swarm"); _TIMER="hermes-swarm-reconcile.timer"; _SERVICE="hermes-swarm-reconcile.service"
+HOME=Path(os.environ.get("HERMES_HOME",Path.home()/".hermes")).expanduser(); STATE=Path(os.environ.get("HERMES_SWARM_STATE_DIR",HOME/"swarms")).expanduser(); _REQUIRED=("ponytail","github-project-reviewer","github-project-adjudicator","github-project-swarm"); _TIMER="hermes-swarm-reconcile.timer"; _SERVICE="hermes-swarm-reconcile.service"; _SUMMARY=("success","partial_failure")
 def manifest_path(swarm_id): return STATE/f"{swarm_id}.json"
 def manifests(): STATE.mkdir(parents=True,exist_ok=True); return sorted(STATE.glob("*.json"))
 def selected(*,name=None,all_swarms=False):
@@ -48,9 +38,26 @@ def load(path):
     if not isinstance(raw,dict): raise RuntimeError(f"{path}: swarm manifest must be a JSON object")
     if raw.get("schema")!=7: raise RuntimeError(f"{path}: unsupported swarm schema {raw.get('schema')!r}; schema 5/6 migration is intentionally disabled. Initialize a fresh v7 swarm.")
     return RuntimeManifest.from_dict(raw)
-def journal(runtime,issue,planned,result,elapsed_ms,error=None):
-    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); row={"ts":time.time(),"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":"error" if error else "none" if result is None else result.outcome,"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,**fields}; STATE.mkdir(parents=True,exist_ok=True)
-    with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n")
+def _journal_outcome(error,result): return "error" if error else "none" if result is None else result.outcome
+def journal(runtime,issue,planned,result,elapsed_ms,error=None,*,correlation_id=None,event="reconcile",receipt=None):
+    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); gates=[] if planned is None else observation_payload(planned.observation,runtime.config)["gates"]; row={"ts":time.time(),"correlation_id":correlation_id,"event":event,"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":_journal_outcome(error,result),"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,"gates":gates,**fields,**(receipt or {})}; STATE.mkdir(parents=True,exist_ok=True)
+    with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n"); return row
+def _merge_attribution(runtime,issue,planned):
+    pr=planned.observation.github.pull_request
+    if pr is None: return None
+    path=STATE/f"{runtime.config.swarm_id}.journal.jsonl"; rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines(keepends=True) if line.endswith("\n")] if path.exists() else []; matches=list(filter(lambda row:(row.get("issue"),row.get("pr"),row.get("head"))==(issue,pr.number,pr.head),rows))
+    intent=next(filter(lambda row:row.get("event")=="merge_intent",reversed(matches)),None); cid=(intent or {}).get("correlation_id"); outcome=next(filter(lambda row:(row.get("event"),row.get("correlation_id"))==("merge_outcome",cid),reversed(matches)),None); value=(outcome or {}).get("merge_outcome")
+    state={(False,False,None):"none",(True,False,None):"observed_external",(True,True,None):"confirmed_after_unknown_request_outcome",(True,True,"unknown"):"confirmed_after_unknown_request_outcome",(True,True,"requested"):"controller_request_confirmed",(True,True,"github_confirmed"):"controller_request_confirmed",(True,True,"rejected"):"observed_external_after_rejected_request",(False,True,None):"outcome_unknown",(False,True,"unknown"):"outcome_unknown",(False,True,"requested"):"request_attempted",(False,True,"rejected"):"request_rejected"}.get((bool(pr.merged_at),bool(intent),value))
+    return {"state":state,"correlation_id":cid,"request_outcome":value,"merged_at":pr.merged_at,"merge_sha":getattr(pr,"merge_sha",None)}
+def _receipt(runtime,planned,outcome): pr=planned.observation.github.pull_request; planner=planned.observation.planner; return {"pr":pr.number,"head":pr.head,"policy":runtime.config.merge_policy,"gate_evidence":{"pr_url":pr.url,"issue_state":planned.observation.github.issue_state,"dependency":planner.dependency.value,"ci":planner.ci.value,"review":planner.review.value,"adjudication":planner.adjudication_decision.value,"merge_gate":planner.merge_gate.value,"base_current":planner.base_current,"blockers":observation_payload(planned.observation,runtime.config)["gates"]},"merge_outcome":outcome}
+def _apply_with_receipt(runtime,planned,correlation_id):
+    pr=planned.observation.github.pull_request; request=planned.plan.action is Action.MERGE and pr is not None and pr.merged_at is None
+    if not request: return apply_plan(runtime,planned)
+    journal(runtime,planned.observation.github.issue_number,planned,None,0,correlation_id=correlation_id,event="merge_intent",receipt=_receipt(runtime,planned,"intent"))
+    try: result=apply_plan(runtime,planned)
+    except Exception as exc: journal(runtime,planned.observation.github.issue_number,planned,None,0,exc,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,"rejected" if isinstance(exc,MergeRequestError) else "unknown")); raise
+    journal(runtime,planned.observation.github.issue_number,planned,result,0,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,result.outcome)); return result
+def _reconcile_context(correlation_id,rows): return correlation_id or uuid.uuid4().hex,[] if rows is None else rows
 def _model(value):
     if len(parts:=shlex.split(value))==1: return parts[0]
     if len(parts)==3 and parts[1]=="--provider": return shlex.join(parts)
@@ -90,8 +97,8 @@ def _timer_health():
 def prepare(): print("prepare: schema 7 needs no prompt/profile projection; execution artifacts are prepared lazily")
 def activate(*,repo=None): validate(repo=repo,all_swarms=True); systemctl("daemon-reload"); systemctl("enable","--now",_TIMER); _timer_health(); print(f"activated {_TIMER}")
 def disable(): systemctl("disable","--now",_TIMER,check=False); systemctl("stop",_SERVICE,check=False); print("disabled Hermes swarm reconciliation; Hermes gateway was not touched")
-def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"merge_policy":runtime.config.merge_policy,"observation":observation_payload(planned.observation),"plan":plan_payload(planned.plan)}
-def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); head=f" head={plan['pr_head'][:12]}" if plan.get("pr_head") else ""; return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} merge={row['merge_policy']} {plan['phase']} action={action}{head} — {plan['reason']}"
+def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"merge_policy":runtime.config.merge_policy,"observation":observation_payload(planned.observation,runtime.config),"plan":plan_payload(planned.plan),"merge_attribution":_merge_attribution(runtime,issue,planned)}
+def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); pr=(row["observation"]["pr"] or {}).get("number","-"); head=(plan.get("pr_head") or "-")[:12]; attribution=(row.get("merge_attribution") or {}).get("state","-"); return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} merge={row['merge_policy']} {plan['phase']} action={action} pr=#{pr} head={head} gates={json.dumps(row['observation']['gates'],separators=(',',':'))} merge_source={attribution} — {plan['reason']}"
 def dry_run(*,name=None,all_swarms=False,json_output=False):
     rows=[]; runtimes=[]; _timer_health(); paths=selected(name=name,all_swarms=all_swarms)
     for path in paths: runtime=load(path); runtimes.append(runtime); rows.extend(_snapshot(runtime,issue,plan_once(runtime,issue)) for issue in runtime.config.issues)
@@ -100,27 +107,29 @@ def explain(*,name,issue,json_output=False):
     runtime=load(selected(name=name)[0])
     if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} retired from swarm {runtime.config.swarm_id} [{runtime.config.repo}]: {runtime.retired_issues[str(issue)]}" if str(issue) in runtime.retired_issues else f"issue #{issue} is not configured in swarm {runtime.config.swarm_id}")
     row=_snapshot(runtime,issue,plan_once(runtime,issue)); print(json.dumps(row,ensure_ascii=False,sort_keys=True) if json_output else _render(row))
-def reconcile_runtime(runtime):
-    errors=[]; sweep=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).watchdog()
+def reconcile_runtime(runtime,correlation_id=None,rows=None):
+    errors=[]; sweep=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).watchdog(); correlation_id,rows=_reconcile_context(correlation_id,rows)
     if sweep.get("skipped_locked"): raise RuntimeError("Kanban watchdog pass skipped: dispatcher lock busy")
     for issue in runtime.config.issues:
         started=time.monotonic(); planned=result=error=None
         try:
             if (planned:=plan_once(runtime,issue)).plan.action is Action.MERGE: runtime=load(manifest_path(runtime.config.swarm_id)); planned=plan_once(runtime,issue)
-            result=apply_plan(runtime,planned)
+            result=_apply_with_receipt(runtime,planned,correlation_id)
             if planned.plan.action is not None: save(runtime)
         except Exception as exc: error=f"{runtime.config.swarm_id} #{issue}: {exc}"; errors.append(error)
-        journal(runtime,issue,planned,result,int((time.monotonic()-started)*1000),error)
+        rows.append(journal(runtime,issue,planned,result,int((time.monotonic()-started)*1000),error,correlation_id=correlation_id))
     return errors
 def reconcile(args):
     if args.dry_run: return dry_run(name=args.name,all_swarms=args.all,json_output=args.json)
-    if args.json: raise RuntimeError("--json is only valid with reconcile --dry-run")
-    errors=[]
+    correlation_id=uuid.uuid4().hex; errors=[]; swarms=[]; partial=False
     for path in selected(name=args.name,all_swarms=args.all):
+        summary={"swarm":path.stem,"status":"success","issues":[],"errors":[]}
         try:
-            with locked(STATE/f".reconcile.{path.stem}.lock",nonblocking=True): errors.extend(reconcile_runtime(load(path)))
-        except BlockingIOError: print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
-        except Exception as exc: errors.append(f"{path.stem}: {exc}")
+            with locked(STATE/f".reconcile.{path.stem}.lock",nonblocking=True): current=reconcile_runtime(load(path),correlation_id=correlation_id,rows=summary["issues"]); errors.extend(current); summary["errors"].extend(current); summary["status"]=_SUMMARY[bool(current)]
+        except BlockingIOError: summary["status"]="skipped_busy"; partial=True; print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
+        except Exception as exc: error=f"{path.stem}: {exc}"; errors.append(error); summary["errors"].append(error); summary["status"]="partial_failure"
+        swarms.append(summary)
+    if args.json: print(json.dumps({"correlation_id":correlation_id,"status":_SUMMARY[max(bool(errors),partial)],"swarms":swarms},ensure_ascii=False,sort_keys=True))
     if errors: raise RuntimeError("reconciliation encountered errors:\n"+"\n".join(errors))
 def retire(args):
     reason=args.reason.strip(); path=selected(name=args.name)[0]
@@ -139,12 +148,12 @@ def build_parser(handlers,root=None):
     root=root or argparse.ArgumentParser(prog="hermes-swarm"); sub=root.add_subparsers(dest="swarm_command",required=True); p=sub.add_parser("init"); p.add_argument("--repo"); p.add_argument("--repo-path",default="."); group=p.add_mutually_exclusive_group(required=True); group.add_argument("--epic",type=int); group.add_argument("--issues"); p.add_argument("--name"); p.add_argument("--board"); p.add_argument("--assignee",required=True); p.add_argument("--worker",required=True); p.add_argument("--reviewer",action="append",required=True); p.add_argument("--adjudicator"); p.add_argument("--max-runtime",default="8h"); p.add_argument("--max-execution-attempts",type=int,default=3); p.add_argument("--ci-mode",choices=["required","none"],default="required"); p.add_argument("--merge-policy",choices=["automatic","manual"],required=True); p.add_argument("--paused",action="store_true"); p.set_defaults(fn=handlers["init"])
     for name in ("status","reconcile","pause","resume"):
         p=sub.add_parser(name); _selection(p)
-        if name=="reconcile": p.add_argument("--dry-run",action="store_true"); p.add_argument("--json",action="store_true")
+        (p.add_argument("--dry-run",action="store_true") if name=="reconcile" else None); (p.add_argument("--json",action="store_true") if name in {"status","reconcile"} else None)
         p.set_defaults(fn=handlers[name])
     p=sub.add_parser("doctor"); p.add_argument("--repo"); p.set_defaults(fn=handlers["doctor"]); p=sub.add_parser("validate"); p.add_argument("--repo"); _selection(p); p.set_defaults(fn=handlers["validate"]); p=sub.add_parser("explain"); p.add_argument("--name",required=True); p.add_argument("--issue",type=int,required=True); p.add_argument("--json",action="store_true"); p.set_defaults(fn=handlers["explain"]); p=sub.add_parser("retire"); p.add_argument("--name",required=True); p.add_argument("--issue",type=int,required=True); p.add_argument("--reason",required=True); p.set_defaults(fn=handlers["retire"]); p=sub.add_parser("merge-policy"); p.add_argument("--name",required=True); p.add_argument("policy",choices=["automatic","manual"]); p.set_defaults(fn=handlers["merge-policy"])
     for name in ("prepare","disable"): sub.add_parser(name).set_defaults(fn=handlers[name])
     p=sub.add_parser("activate"); p.add_argument("--repo"); p.set_defaults(fn=handlers["activate"]); return root
-def _parser(): handlers={"init":lambda args:init(args,reconcile_runtime),"status":lambda args:dry_run(name=args.name,all_swarms=args.all),"reconcile":reconcile,"pause":lambda args:configure(args,paused=True),"resume":lambda args:configure(args,paused=False),"doctor":doctor,"validate":lambda args:validate(repo=args.repo,name=args.name,all_swarms=args.all or not args.name),"explain":lambda args:explain(name=args.name,issue=args.issue,json_output=args.json),"retire":retire,"merge-policy":lambda args:configure(args,merge_policy=args.policy),"prepare":lambda _:prepare(),"activate":lambda args:activate(repo=args.repo),"disable":lambda _:disable()}; return build_parser(handlers)
+def _parser(): handlers={"init":lambda args:init(args,reconcile_runtime),"status":lambda args:dry_run(name=args.name,all_swarms=args.all,json_output=args.json),"reconcile":reconcile,"pause":lambda args:configure(args,paused=True),"resume":lambda args:configure(args,paused=False),"doctor":doctor,"validate":lambda args:validate(repo=args.repo,name=args.name,all_swarms=args.all or not args.name),"explain":lambda args:explain(name=args.name,issue=args.issue,json_output=args.json),"retire":retire,"merge-policy":lambda args:configure(args,merge_policy=args.policy),"prepare":lambda _:prepare(),"activate":lambda args:activate(repo=args.repo),"disable":lambda _:disable()}; return build_parser(handlers)
 def main(): args=_parser().parse_args(); args.fn(args)
 if __name__=="__main__":
     try: main()
