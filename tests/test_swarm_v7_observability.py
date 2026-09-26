@@ -20,7 +20,7 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         self.assertEqual(gates["hold_label"],"hold-merge"); self.assertTrue({"paused","manual_merge_mode","dependency_wait","ci_missing_evidence"}<=set(gates))
         ready=planned(rt,merge_gate=MergeGate.BLOCKED,labels=("hold-merge",)); self.assertEqual((ready.plan.phase,ready.plan.action),(Phase.MERGE_BLOCKED,None))
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)): rendered=cli._render(cli._snapshot(rt,7,ready))
-        self.assertIn("MERGE_BLOCKED",rendered); self.assertIn('"code":"hold_label"',rendered); self.assertIn("hold-merge",rendered); self.assertNotIn("EXECUTION_STALLED",rendered)
+        self.assertIn("MERGE_BLOCKED",rendered); self.assertIn('"code":"hold_label"',rendered); self.assertIn("hold-merge",rendered); self.assertNotIn("EXECUTION_STALLED",rendered); self.assertEqual(observation_payload(planned(runtime(),merged_at="2026-09-25T23:00:00Z").observation,runtime().config)["gates"],[])
         behind=planned(runtime()); behind.observation.github.pull_request.merge_state="BEHIND"; self.assertEqual(gh._merge_gate(runtime().config,behind.observation.github.pull_request),MergeGate.BLOCKED)
         execution=planned(runtime(),unsafe_reason="execution attempts exhausted"); self.assertIn("execution_failure",{row["code"] for row in observation_payload(execution.observation,runtime().config)["gates"]})
         failed=planned(runtime(),unsafe_reason="GitHub observation failed: 502",github_unsafe="GitHub observation failed: 502"); codes={row["code"] for row in observation_payload(failed.observation,runtime().config)["gates"]}; self.assertIn("observation_failure",codes); self.assertNotIn("execution_failure",codes)
@@ -43,7 +43,7 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         config=runtime().config; before=SimpleNamespace(number=61,head=H1,merged_at=None,merge_sha=None); after=SimpleNamespace(number=61,head=H1,merged_at="2026-09-25T23:00:00Z",merge_sha=M1); first=SimpleNamespace(pull_request=before,unsafe_reason=None); fresh=SimpleNamespace(pull_request=after,unsafe_reason=None); reader=Mock(); writer=Mock()
         with patch.object(merge,"observe_issue",side_effect=(first,fresh)),patch.object(merge,"adjudication_ledger_error",return_value=None),patch.object(merge,"_blockers",return_value=[]),patch.object(merge,"_close_source_issue") as close:
             result=merge.request_exact_head_merge(config,7,H1,reader,writer)
-        self.assertEqual((result.state, result.merge_sha),(merge.MergeResultState.GITHUB_CONFIRMED,M1)); writer.merge.assert_called_once_with("owner/repo",61,H1); close.assert_called_once_with(config,fresh,reader,writer)
+        self.assertEqual((result.state, result.merge_sha),(merge.MergeResultState.GITHUB_CONFIRMED,M1)); writer.merge.assert_called_once_with("owner/repo",61,H1); close.assert_not_called()
     def test_real_reconcile_json_reports_mixed_swarm_results_and_nonzero(self):
         rt=runtime(); calls=[]
         def run(_runtime,*,correlation_id=None,rows=None):

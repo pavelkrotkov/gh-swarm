@@ -5,7 +5,7 @@
 from collections import namedtuple; from enum import Enum; import json; from swarm_v7 import AdjudicationDecision, CiState, ReviewState; from swarm_v7_cli_process import run_command; from swarm_v7_github import GhReader, UnsafeGitHubObservation, adjudication_publication, exact_sha, mapping, native_head, observe_issue, positive_int, review_marker
 class MergeAuthorityError(RuntimeError): pass
 class MergeRequestError(RuntimeError): pass
-MergeResultState=Enum("MergeResultState",{x:x for x in "REQUESTED GITHUB_CONFIRMED".split()},type=str); MergeResult=namedtuple("MergeResultBase","state pr_number head merged_at merge_sha",defaults=(None,None)); MergeResult.reason=property(lambda r:f"GitHub confirmed exact head {r.head} merged at {r.merged_at} and source issue closed" if r.state is MergeResultState.GITHUB_CONFIRMED else f"exact-head merge requested for {r.head}")
+MergeResultState=Enum("MergeResultState",{x:x for x in "REQUESTED GITHUB_CONFIRMED".split()},type=str); MergeResult=namedtuple("MergeResultBase","state pr_number head merged_at merge_sha",defaults=(None,None)); MergeResult.reason=property(lambda r:f"GitHub confirmed exact head {r.head} merged at {r.merged_at}" if r.state is MergeResultState.GITHUB_CONFIRMED else f"exact-head merge requested for {r.head}")
 class GhMerger:
     def __init__(self,timeout_s=30.0,runner=None):
         if timeout_s<=0: raise ValueError("timeout_s must be positive")
@@ -62,7 +62,7 @@ def _confirmed(pr,head):
     if not pr.merged_at: return None
     if pr.head!=head: raise MergeAuthorityError("GitHub-confirmed merged PR head differs from requested head")
     return MergeResult(MergeResultState.GITHUB_CONFIRMED,pr.number,pr.head,pr.merged_at,getattr(pr,"merge_sha",None))
-def _confirm_after_request(config,issue,head,pr,reader,writer): fresh=observe_issue(config,issue,reader); confirmed=None if fresh.unsafe_reason or fresh.pull_request is None else _confirmed(fresh.pull_request,head); _close_source_issue(config,fresh,reader,writer) if confirmed is not None else None; return confirmed or MergeResult(MergeResultState.REQUESTED,pr.number,head)
+def _confirm_after_request(config,issue,head,pr,reader,writer): fresh=observe_issue(config,issue,reader); confirmed=None if fresh.unsafe_reason or fresh.pull_request is None else _confirmed(fresh.pull_request,head); return confirmed or MergeResult(MergeResultState.REQUESTED,pr.number,head)
 def _close_source_issue(config,github,reader,writer):
     if github.issue_number not in config.issues: raise MergeAuthorityError("issue is not configured for this swarm")
     if github.issue_state!="CLOSED": writer.close_issue(config.repo,github.issue_number)
