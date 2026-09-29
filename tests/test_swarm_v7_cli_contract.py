@@ -49,10 +49,11 @@ class CliContractTests(unittest.TestCase):
             for name in ("a.json","b.json","c.json"): (Path(td)/name).touch()
             with self.assertRaisesRegex(RuntimeError,"injected"): cli.reconcile(args)
         self.assertIn("a: reconcile already running; skipped",err.getvalue()); self.assertEqual(run.call_count,2)
-    def test_unsafe_planning_result_is_journaled_not_persisted(self):
+    def test_unsafe_observation_is_journaled_and_validate_fails_closed(self):
         rt=runtime(); obs=Observation(issue_number=7,unsafe_reason="observation failed"); gh=GitHubIssueObservation(7,"CLOSED",(),None,obs,"observation failed"); item=PlannedIssue(IssueObservation(gh,obs,{}),Plan(Phase.EXECUTION_STALLED,None,"unsafe observation: observation failed",None,None))
         adapter=Mock(); adapter.watchdog.return_value={}
         with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",return_value=item),patch.object(cli,"save") as save:
             errors=cli.reconcile_runtime(rt); event=json.loads((Path(td)/"demo.journal.jsonl").read_text())
+            with patch.object(cli,"doctor"),patch.object(cli,"selected",return_value=[Path("demo.json")]),patch.object(cli,"load",return_value=rt),self.assertRaisesRegex(RuntimeError,r"demo #7: observation failed"): cli.validate(name="demo")
         self.assertEqual(errors,["demo #7: observation failed"]); self.assertEqual(event["outcome"],"error"); self.assertIn("demo [owner/repo] #7: state=CLOSED",cli._render(cli._snapshot(rt,7,item))); save.assert_not_called()
 if __name__=="__main__": unittest.main()
