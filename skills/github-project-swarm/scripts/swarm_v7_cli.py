@@ -87,8 +87,8 @@ def doctor(args):
 def validate(*,repo=None,name=None,all_swarms=True):
     doctor(SimpleNamespace(repo=repo)); paths=selected(name=name,all_swarms=all_swarms if not name else False)
     for path in paths:
-        runtime=load(path); plans=tuple(plan_once(runtime,issue) for issue in runtime.config.issues); bad=next(((item.observation.github.issue_number,reason) for item in plans for reason in (item.observation.github.unsafe_reason,item.observation.planner.unsafe_reason) if reason),None)
-        if bad: raise RuntimeError(f"{runtime.config.swarm_id} #{bad[0]}: {bad[1]}")
+        runtime=load(path); plans=tuple(plan_once(runtime,issue) for issue in runtime.config.issues); bad=next((item for item in plans if item.observation.planner.unsafe_reason),None)
+        if bad: raise RuntimeError(f"{runtime.config.swarm_id} #{bad.observation.github.issue_number}: {bad.observation.planner.unsafe_reason}")
     print("validate: ok; no swarm actions performed")
 def systemctl(*args,check=True): return run_command(["systemctl","--user",*args],check=check)
 def _timer_health():
