@@ -77,6 +77,7 @@ class ExactCheckoutCiTests(unittest.TestCase):
         return gh.ci_state(config(),gh.checks(FakeReader(values),"owner/repo",H2))
     def test_success_requires_current_checked_out_sha(self):
         self.assertEqual(self.state(action_check(),f"HERMES_CHECKOUT_SHA={H2}\n"),v7.CiState.PASSED)
+        self.assertEqual(self.state(action_check(),f"\x1b[32mHERMES_CHECKOUT_SHA={H2}\x1b[0m\n"),v7.CiState.PASSED)
         self.assertEqual(self.state(action_check(),checkout_log(H2)),v7.CiState.PASSED)
         self.assertEqual(self.state(action_check(),checkout_log(H1)),v7.CiState.PENDING)
     def test_missing_stale_and_ambiguous_receipts_stay_pending(self):
