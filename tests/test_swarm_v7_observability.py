@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, Mock, patch
 ROOT=Path(__file__).parents[1]; SCRIPTS=ROOT/"skills"/"github-project-swarm"/"scripts"
 if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli, swarm_v7_github as gh, swarm_v7_merge as merge
+import swarm_v7_cli_state as cli_state
+import swarm_v7_cli_runtime as cli_runtime
 from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, Phase, ReviewState, plan_issue
 from swarm_v7_controller import IssueObservation, PlannedIssue, RuntimeManifest, observation_payload
 H1="1"*40; H2="2"*40; M1="a"*40
@@ -19,7 +21,7 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         rt=runtime(paused=True,policy="manual"); held=planned(rt,dependency=DependencyState.BLOCKED,ci=CiState.UNKNOWN,merge_gate=MergeGate.BLOCKED,labels=("hold-merge",)); gates={row["code"]:row["detail"] for row in observation_payload(held.observation,rt.config)["gates"]}
         self.assertEqual(gates["hold_label"],"hold-merge"); self.assertTrue({"paused","manual_merge_mode","dependency_wait","ci_missing_evidence"}<=set(gates))
         ready=planned(rt,merge_gate=MergeGate.BLOCKED,labels=("hold-merge",)); self.assertEqual((ready.plan.phase,ready.plan.action),(Phase.MERGE_BLOCKED,None))
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)): rendered=cli._render(cli._snapshot(rt,7,ready))
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)): rendered=cli._render(cli._snapshot(rt,7,ready))
         self.assertIn("MERGE_BLOCKED",rendered); self.assertIn('"code":"hold_label"',rendered); self.assertIn("hold-merge",rendered); self.assertNotIn("EXECUTION_STALLED",rendered); self.assertEqual(observation_payload(planned(runtime(),merged_at="2026-09-25T23:00:00Z").observation,runtime().config)["gates"],[])
         behind=planned(runtime()); behind.observation.github.pull_request.merge_state="BEHIND"; self.assertEqual(gh._merge_gate(runtime().config,behind.observation.github.pull_request),MergeGate.BLOCKED)
         execution=planned(runtime(),unsafe_reason="execution attempts exhausted"); self.assertIn("execution_failure",{row["code"] for row in observation_payload(execution.observation,runtime().config)["gates"]})
@@ -27,12 +29,12 @@ class SwarmV7ObservabilityTests(unittest.TestCase):
         args=cli._parser().parse_args(["status","--name","demo","--json"]); self.assertTrue(args.json)
     def test_merge_receipts_distinguish_rejected_unknown_controller_and_external_outcomes(self):
         rt=runtime(); candidate=planned(rt)
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"apply_plan",side_effect=merge.MergeRequestError("rejected by GitHub")):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli_state,"apply_plan",side_effect=merge.MergeRequestError("rejected by GitHub")):
             with self.assertRaisesRegex(RuntimeError,"rejected"): cli._apply_with_receipt(rt,candidate,"cid-1")
             path=Path(td)/"demo.journal.jsonl"; events=[json.loads(line) for line in path.read_text().splitlines()]
             self.assertEqual([row["event"] for row in events],["merge_intent","merge_outcome"]); self.assertEqual({row["correlation_id"] for row in events},{"cid-1"}); self.assertEqual((events[0]["pr"],events[0]["head"],events[0]["policy"]),(61,H1,"automatic")); self.assertEqual(events[1]["merge_outcome"],"rejected"); self.assertEqual(events[0]["gate_evidence"]["ci"],"PASSED")
             path.unlink()
-            with patch.object(cli,"apply_plan",side_effect=RuntimeError("post-request cleanup failed")):
+            with patch.object(cli_state,"apply_plan",side_effect=RuntimeError("post-request cleanup failed")):
                 with self.assertRaisesRegex(RuntimeError,"cleanup"): cli._apply_with_receipt(rt,candidate,"cid-2")
             unknown_events=[json.loads(line) for line in path.read_text().splitlines()]; self.assertEqual(unknown_events[-1]["merge_outcome"],"unknown"); pr=candidate.observation.github.pull_request; pr.merged_at="2026-09-25T23:00:00Z"; pr.merge_sha=M1; self.assertEqual(cli._merge_attribution(rt,7,candidate)["state"],"confirmed_after_unknown_request_outcome")
             requested=dict(events[1]); requested.update(outcome="requested",error=None,merge_outcome="requested"); path.write_text("\n".join(map(json.dumps,(events[0],requested)))+"\n")

@@ -6,6 +6,8 @@ ROOT=Path(__file__).parents[1]; SCRIPTS=ROOT/"skills"/"github-project-swarm"/"sc
 if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli
 import swarm_v7_cli_process as process
+import swarm_v7_cli_state as cli_state
+import swarm_v7_cli_runtime as cli_runtime
 from swarm_v7 import Action, AdjudicationDecision, CiState, DependencyState, ExecutionState, ManifestV7, Observation, Phase, Plan, ReviewState, plan_issue
 from swarm_v7_controller import ActionResult, ExecutionContext, IssueObservation, PlannedIssue, RuntimeManifest, _overlay, _remember, _slot, _worker, apply_plan, dispatch_attempts, observe_issue, plan_once
 from swarm_v7_github import GitHubIssueObservation
@@ -21,7 +23,7 @@ class LifecycleTests(unittest.TestCase):
     def test_cli_contains_exact_retained_command_surface(self): self.assertEqual(set(cli._parser()._subparsers._group_actions[0].choices),{"init","status","reconcile","pause","resume","doctor","validate","explain","retire","merge-policy","prepare","activate","disable"})
     def test_retired_issue_remains_internal_to_github_dependency_observation(self):
         rt=runtime(issues=(2,)); rt.retired_issues={"1":"closed externally"}; github=SimpleNamespace(unsafe_reason="stop",pull_request=None,planner=Observation(2),issue_number=2)
-        with patch("swarm_v7_controller.observe_github",return_value=github) as observe: self.assertIs(observe_issue(rt,2).github,github)
+        with patch("swarm_v7_controller_runtime.observe_github",return_value=github) as observe: self.assertIs(observe_issue(rt,2).github,github)
         self.assertEqual(observe.call_args.args[0].issues,(2,1))
     def test_schema_five_and_six_fail_closed(self):
         for schema in (5,6):
@@ -34,7 +36,7 @@ class LifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"legacy/unknown fields"): RuntimeManifest.from_dict(data|{field:"stale"})
     def test_manifest_save_is_atomic_and_fsynced(self):
         rt=runtime(issues=(1,))
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"_fsync_directory") as fsync:
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli_state,"_fsync_directory") as fsync:
             cli.save(rt); self.assertEqual(cli.load(Path(td)/"demo.json").to_dict(),rt.to_dict()); fsync.assert_called_once_with(Path(td)); self.assertEqual(list(Path(td).glob("*.tmp")),[])
     def test_nonblocking_lock_rejects_overlap(self):
         with tempfile.TemporaryDirectory() as td:
@@ -51,15 +53,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(rt.cursors[key]["task_id"],"task-1"); self.assertEqual(rt.cursors[key]["attempt"],1); self.assertIn("created_at",rt.cursors[key])
     def test_new_task_grace_survives_restart_and_worker_start(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; adapter=Mock(); adapter.create.return_value="task-1"; adapter.observe.side_effect=(SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1"),SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1"),SimpleNamespace(outcome=Outcome.ACTIVE,status="running",has_run=True,task_id="task-1"))
-        with patch("swarm_v7_controller.time.time",side_effect=(1000,1100)): result=dispatch_attempts(rt,adapter,key,Mock()); rt=RuntimeManifest.from_dict(rt.to_dict()); waiting=_slot(rt,key,adapter,{}); running=_slot(rt,key,adapter,{})
+        with patch("swarm_v7_controller_runtime.time.time",side_effect=(1000,1100)): result=dispatch_attempts(rt,adapter,key,Mock()); rt=RuntimeManifest.from_dict(rt.to_dict()); waiting=_slot(rt,key,adapter,{}); running=_slot(rt,key,adapter,{})
         self.assertEqual(result.outcome,"active"); self.assertEqual(waiting,(ExecutionState.RUNNING,None)); self.assertEqual(running,(ExecutionState.RUNNING,None))
     def test_active_task_without_worker_run_fails_closed_after_grace(self):
         rt=runtime(issues=(1,)); key="swarm:demo:issue:1:implementation"; rt.cursors[key]={"task_id":"task-1","attempt":1,"created_at":1000}; adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="ready",has_run=False,task_id="task-1")
-        with patch("swarm_v7_controller.time.time",side_effect=(1300,900)): expired=_slot(rt,key,adapter,{}); backward=_slot(rt,key,adapter,{})
+        with patch("swarm_v7_controller_runtime.time.time",side_effect=(1300,900)): expired=_slot(rt,key,adapter,{}); backward=_slot(rt,key,adapter,{})
         self.assertEqual(expired[0],ExecutionState.FAILED); self.assertEqual(backward[0],ExecutionState.FAILED); self.assertIn("no worker run",expired[1])
     def test_review_tasks_get_the_same_startup_grace(self):
         rt=runtime(issues=(1,)); row=SimpleNamespace(task_id="task-r",attempt=1,semantic_key="review-key",state=ExecutionState.RUNNING)
-        with patch("swarm_v7_controller.time.time",return_value=1000): _remember(rt,(row,))
+        with patch("swarm_v7_controller_runtime.time.time",return_value=1000): _remember(rt,(row,))
         self.assertEqual(rt.cursors["review-key"],{"task_id":"task-r","attempt":1,"created_at":1000})
     def test_successful_review_without_publication_stalls_immediately(self):
         rt=runtime(issues=(1,)); head="1"*40; key=semantic_key(rt.config.swarm_id,1,"review",slot=1,head=head); rt.cursors[key]={"task_id":"task-r1","attempt":1}; planner=Observation(1,pr_head=head,ci=CiState.PASSED); github=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=head,reviewers=(SimpleNamespace(slot=2),)),planner=planner); adapter=Mock(); adapter.observe.return_value=SimpleNamespace(outcome=Outcome.SUCCESS,status="done",has_run=True,task_id="task-r1")
@@ -92,7 +94,7 @@ class LifecycleTests(unittest.TestCase):
         _worker(ctx,item.plan,False); spec=adapter.create.call_args.args[0]; self.assertEqual(spec.max_retries,1); self.assertEqual(spec.assignee,"sat-swarm"); self.assertEqual(spec.completion_contract,"owner/repo"); self.assertIn("Prepared base SHA: "+"1"*40,spec.body); self.assertIn("merge exact prepared base "+"1"*40,spec.body); self.assertIn("resolve conflicts",spec.body); self.assertIn("all required checks for PUSHED_SHA have completed successfully",spec.body); self.assertIn("prior-head, base-branch, merge-candidate, sibling-PR, and local results do not count",spec.body); self.assertIn("104595",spec.body); self.assertIn("do not merge",spec.body.lower())
     def test_stale_pr_is_planned_before_ci_and_dependency_gate_wins(self):
         rt=runtime(issues=(1,)); old,base,new="2"*40,"3"*40,"4"*40; gh=SimpleNamespace(issue_number=1,pull_request=SimpleNamespace(head=old,merged_at=None,reviewers=()),planner=Observation(1,pr_head=old,ci=CiState.PENDING),unsafe_reason=None); adapter=Mock(); adapter.create.return_value="task-refresh"; adapter.observe.return_value=SimpleNamespace(outcome=Outcome.ACTIVE,status="running"); workspace=Mock(); workspace.refresh.return_value=(base,None,old); workspace.prepare.return_value=base; workspace.ancestor.return_value=False; reader=Mock(); reader.get.return_value={"body":"work"}
-        with patch("swarm_v7_controller.observe_github",return_value=gh): item=plan_once(rt,1,reader=reader,kanban=adapter,workspace=workspace)
+        with patch("swarm_v7_controller_runtime.observe_github",return_value=gh): item=plan_once(rt,1,reader=reader,kanban=adapter,workspace=workspace)
         self.assertEqual((item.observation.planner.base_current,item.plan.phase,item.plan.action),(False,Phase.NEEDS_REVISION,Action.START_REVISION)); workspace.validate_binding.assert_called_once_with("owner/repo"); blocked=plan_issue(Observation(1,dependency=DependencyState.BLOCKED,pr_head=old,ci=CiState.PENDING,base_current=False),rt.config); self.assertEqual((blocked.phase,blocked.action),(Phase.WAITING_DEPENDENCY,None)); active=plan_issue(Observation(1,pr_head=old,ci=CiState.PENDING,revision=ExecutionState.RUNNING,base_current=False),rt.config); self.assertEqual((active.phase,active.action),(Phase.REVISION_RUNNING,None))
         result=apply_plan(rt,item,reader=reader,kanban=adapter,workspace=workspace); self.assertEqual(result.outcome,"active"); self.assertIn("resolve conflicts",adapter.create.call_args.args[0].body); refreshed=plan_issue(Observation(1,pr_head=new,ci=CiState.PENDING),rt.config); self.assertEqual((refreshed.phase,refreshed.action),(Phase.WAITING_CI,None))
     def test_invalid_zero_attempt_bound_fails_before_dispatch(self):
@@ -106,30 +108,30 @@ class LifecycleTests(unittest.TestCase):
     def test_reconcile_watchdog_precedes_plan_and_failure_does_not_persist(self):
         rt,item=runtime(issues=(1,)),planned(); result=ActionResult("active",("task-1",)); adapter=Mock(); adapter.watchdog.return_value={}
         def plan(*_): self.assertTrue(adapter.watchdog.called); return item
-        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli,"apply_plan",return_value=result) as apply,patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])
+        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli_state,"apply_plan",return_value=result) as apply,patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertEqual(cli.reconcile_runtime(rt),[])
         apply.assert_called_once_with(rt,item); save.assert_called_once_with(rt); adapter.watchdog.reset_mock()
-        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli,"apply_plan",side_effect=RuntimeError("execution failed")),patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertIn("execution failed",cli.reconcile_runtime(rt)[0]); save.assert_not_called()
+        with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",side_effect=plan),patch.object(cli_state,"apply_plan",side_effect=RuntimeError("execution failed")),patch.object(cli,"save") as save,patch.object(cli,"journal"): self.assertIn("execution failed",cli.reconcile_runtime(rt)[0]); save.assert_not_called()
     def test_reconcile_lock_contention_fails_before_planning(self):
         rt=runtime(issues=(1,)); adapter=Mock(); adapter.watchdog.return_value={"skipped_locked":True}
         with patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once") as plan,self.assertRaisesRegex(RuntimeError,"dispatcher lock busy"): cli.reconcile_runtime(rt)
         plan.assert_not_called()
     def test_paused_init_is_configuration_only(self):
         args=SimpleNamespace(repo="owner/repo",repo_path="/repo",issues="1",epic=None,name="demo",board=None,assignee="sat-swarm",worker="worker",reviewer=["r1","r2"],adjudicator=None,ci_mode="required",merge_policy="automatic",paused=True,max_execution_attempts=2,max_runtime="30m"); reader=Mock(); reader.get.side_effect=[{"number":1,"state":"open"},{"default_branch":"main"}]
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"GhReader",return_value=reader),patch.object(cli,"GitWorkspace") as workspace,patch.object(cli,"KanbanAdapter") as kanban,patch.object(cli,"save") as save:
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli_runtime,"GhReader",return_value=reader),patch.object(cli_runtime,"GitWorkspace") as workspace,patch.object(cli_runtime,"KanbanAdapter") as kanban,patch.object(cli_runtime,"save") as save:
             cli.init(args)
         workspace.return_value.validate_binding.assert_called_once_with("owner/repo"); kanban.return_value.create_board.assert_called_once(); save.assert_called_once(); self.assertEqual(save.call_args.args[0].assignee,"sat-swarm"); self.assertEqual(save.call_args.args[0].config.merge_policy,"automatic")
     def test_disable_targets_only_swarm_units(self):
-        with patch.object(cli,"systemctl") as systemctl: cli.disable()
+        with patch.object(cli_runtime,"systemctl") as systemctl: cli.disable()
         self.assertEqual([call.args for call in systemctl.call_args_list],[("disable","--now","hermes-swarm-reconcile.timer"),("stop","hermes-swarm-reconcile.service")])
     def test_timer_rearms_after_restart_and_dead_schedule_fails_loudly(self):
         timer=TIMER.read_text(); self.assertIn("OnActiveSec=2min",timer); self.assertIn("OnUnitInactiveSec=2min",timer); self.assertNotIn("OnBootSec=",timer); self.assertNotIn("OnUnitActiveSec=",timer)
         dead="ActiveState=active\nNextElapseUSecMonotonic=0"
-        with patch.object(cli,"systemctl",side_effect=(dead,"inactive")),self.assertRaisesRegex(RuntimeError,"no next elapse"): cli._timer_health()
-        with patch.object(cli,"systemctl",side_effect=(dead,"activating")): cli._timer_health()
-        with patch.object(cli,"systemctl",return_value="ActiveState=active\nNextElapseUSecMonotonic=123"): cli._timer_health()
+        with patch.object(cli_runtime,"systemctl",side_effect=(dead,"inactive")),self.assertRaisesRegex(RuntimeError,"no next elapse"): cli._timer_health()
+        with patch.object(cli_runtime,"systemctl",side_effect=(dead,"activating")): cli._timer_health()
+        with patch.object(cli_runtime,"systemctl",return_value="ActiveState=active\nNextElapseUSecMonotonic=123"): cli._timer_health()
         args=cli._parser().parse_args(["status","--all"])
         with patch.object(cli,"_timer_health") as health,patch.object(cli,"selected",return_value=[]): args.fn(args); health.assert_called_once()
-        with patch.object(cli,"run_command",return_value=" ".join(cli._REQUIRED)),patch.object(cli,"KanbanAdapter"),patch.object(cli,"_timer_health") as health: cli.doctor(SimpleNamespace(repo=None)); health.assert_called_once()
+        with patch.object(cli_runtime,"run_command",return_value=" ".join(cli._REQUIRED)),patch.object(cli_runtime,"KanbanAdapter"),patch.object(cli_runtime,"_timer_health") as health: cli.doctor(SimpleNamespace(repo=None)); health.assert_called_once()
     def test_bootstrap_and_service_stay_gateway_independent(self):
         bootstrap=BOOTSTRAP.read_text(); service=SERVICE.read_text(); self.assertIn("hermes swarm reconcile --all",service); self.assertIn("TimeoutStartSec=15min",service); self.assertNotIn("hermes-gateway.service",bootstrap+(SCRIPTS/"swarm_v7_cli.py").read_text())
 if __name__=="__main__": unittest.main()

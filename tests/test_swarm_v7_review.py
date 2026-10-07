@@ -10,7 +10,7 @@ sys.path.insert(0, str(SCRIPTS))
 v7 = importlib.import_module("swarm_v7")
 gh = importlib.import_module("swarm_v7_github")
 kb = importlib.import_module("swarm_v7_kanban")
-rx = importlib.import_module("swarm_v7_review")
+rx = importlib.import_module("swarm_v7_controller_execution")
 
 H1 = "1" * 40
 H2 = "2" * 40

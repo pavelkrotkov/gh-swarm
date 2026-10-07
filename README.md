@@ -19,7 +19,7 @@ python -m pip install -c requirements/ci-constraints.txt PyYAML radon cognitive-
 make check
 ```
 
-Canonical CI runs the behavioral tests, absolute runtime quality profile (CC, cognitive complexity, nesting, LOC and reachability), AST dead-code boundary, YAML/shell validation and a tracked-source secret scan. Maintenance Index is reported diagnostically rather than used as an incentive to pad comments or fragment cohesive modules.
+Canonical CI runs the behavioral tests, absolute runtime quality profile (MI >75, CC <8 with core paths <=6, cognitive complexity, nesting, LOC and reachability), AST dead-code boundary, YAML/shell validation and a tracked-source secret scan.
 
 Host-only recovery qualification remains separate from fast CI:
 

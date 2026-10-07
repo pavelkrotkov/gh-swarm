@@ -1,115 +1,12 @@
-# Read-only GitHub authority for schema-7 planning and exact-head evidence.
-# Every request is a bounded read. Markers index native GitHub rows but do not create
-# authority: shape, scope, slot, native commit, exact head, CI and ambiguity checks fail
-# closed before normalized facts reach planning or the separate merge mutation owner.
-import base64, json, re; from collections import namedtuple; from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, ReviewState; from swarm_v7_cli_process import run_command
-class GitHubReadError(RuntimeError): pass
-class UnsafeGitHubObservation(RuntimeError): pass
-class AdjudicationExecutionError(UnsafeGitHubObservation): pass
-BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at merge_sha labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
-_SHA=re.compile(r"^[0-9a-f]{40}$"); _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->"); _OK={"success","neutral","skipped"}; _BAD={"failure","timed_out","action_required","startup_failure"}; _JOB=re.compile(r"/actions/runs/\d+/job/(\d+)(?:$|[/?#])"); _RECEIPT=re.compile(r"HERMES_CHECKOUT_SHA=([0-9a-f]{40})\b"); _CHECKOUT=re.compile(r"git log -1 --format=%H\r?\n[^\r\n]*\b([0-9a-f]{40})\b")
-def exact_sha(value):
-    if not _SHA.fullmatch(value): raise ValueError("full 40-character lowercase SHA required")
-    return value
-def positive_int(value,name):
-    if type(value) is not int or value<=0: raise UnsafeGitHubObservation(f"{name} must be a positive integer")
-    return value
-def mapping(value,name):
-    if not isinstance(value,dict): raise GitHubReadError(f"{name} is not an object")
-    return value
-def nested_text(row,key,child):
-    value=row.get(key,{}).get(child) if isinstance(row.get(key),dict) else None
-    if not isinstance(value,str) or not value: raise UnsafeGitHubObservation(f"missing {key}.{child}")
-    return value
-def native_head(row,head,review=False):
-    if review and not all((row.get("commit_id"),str(row.get("state") or "").upper()=="COMMENTED",row.get("submitted_at"))): raise UnsafeGitHubObservation("review publication must be a submitted COMMENT review bound to the exact head")
-    if (value:=row.get("commit_id")) is not None and exact_sha(str(value).lower())!=head: raise UnsafeGitHubObservation(f"native GitHub commit_id does not match claimed head {head}")
-class GhReader:
-    def __init__(self,timeout_s=30.0):
-        if timeout_s<=0: raise ValueError("timeout_s must be positive")
-        self.timeout_s=timeout_s
-    def get(self,endpoint):
-        try: return json.loads(run_command(["gh","api","--method","GET","-H","Accept: application/vnd.github+json",endpoint],timeout=self.timeout_s))
-        except (json.JSONDecodeError,RuntimeError) as exc: raise GitHubReadError(f"GitHub returned invalid JSON for {endpoint}" if isinstance(exc,json.JSONDecodeError) else str(exc)) from exc
-    def text(self,endpoint):
-        try: return run_command(["gh","api","--allow-escape-sequences","--method","GET",endpoint],timeout=self.timeout_s)
-        except RuntimeError as exc: raise GitHubReadError(str(exc)) from exc
-    def graphql(self,query): result=json.loads(run_command(["gh","api","graphql","--paginate","--slurp","-f",f"query={query}"],timeout=self.timeout_s)); return [mapping(row.get("data") if not row.get("errors") else None,"GraphQL data") for row in _rows(result)]
-    def list(self,endpoint):
-        rows=[]
-        for page in range(1,101):
-            value=self.get(f"{endpoint}{'&' if '?' in endpoint else '?'}per_page=100&page={page}")
-            if not isinstance(value,list): raise GitHubReadError(f"expected a list from {endpoint}")
-            rows.extend(row for row in value if isinstance(row,dict))
-            if len(value)<100: return rows
-        raise GitHubReadError(f"pagination limit exceeded for {endpoint}")
-def review_marker(swarm,issue,slot,head):
-    head=exact_sha(head)
-    if not swarm or ":" in swarm or issue<=0 or slot<=0: raise ValueError("invalid review marker identity")
-    return f"<!-- hermes-swarm-review:{swarm}:{issue}:v{slot}:{head} -->"
-def adjudication_marker(swarm,issue,head):
-    head=exact_sha(head)
-    if not swarm or ":" in swarm or issue<=0: raise ValueError("invalid adjudication marker identity")
-    return f"<!-- hermes-swarm-adjudication:{swarm}:{issue}:{head} -->"
-def _scoped(body,pattern,prefix,swarm,issue,kind):
-    matches=[m for m in pattern.finditer(body) if m.group("swarm")==swarm and int(m.group("issue"))==issue]
-    if body.count(prefix)!=len(matches): raise UnsafeGitHubObservation(f"malformed or non-v7 {kind} publication")
-    return matches
-def _review_row(config,issue,head,row,found):
-    prefix=f"<!-- hermes-swarm-review:{config.swarm_id}:{issue}:"
-    for match in _scoped(str(row.get("body") or ""),_REVIEW,prefix,config.swarm_id,issue,"review"):
-        if match.group("head")!=head: continue
-        slot=int(match.group("slot")); native_head(row,head,True)
-        if slot<1 or slot>len(config.reviewer_models): raise UnsafeGitHubObservation(f"unexpected reviewer slot {slot}")
-        if slot in found: raise UnsafeGitHubObservation(f"duplicate reviewer publication for slot {slot} and head {head}")
-        found[slot]=ReviewerPublication(slot,head)
-def review_publications(config,issue,head,rows):
-    found={}
-    for row in rows: _review_row(config,issue,head,row,found)
-    pubs=tuple(found[slot] for slot in sorted(found)); state=ReviewState.NONE if not pubs else ReviewState.DISPUTED if len(pubs)==len(config.reviewer_models) else ReviewState.RUNNING; return pubs,state
-def payload(body,head):
-    matches=_DECISION.findall(body)
-    if len(matches)!=1: raise AdjudicationExecutionError("adjudication requires exactly one machine-readable decision payload")
-    try:
-        token=matches[0]+"="*((-len(matches[0]))%4); value=json.loads(base64.b64decode(token.encode(),altchars=b"-_",validate=True).decode())
-    except Exception as exc: raise AdjudicationExecutionError("invalid adjudication decision payload") from exc
-    if not isinstance(value,dict): raise AdjudicationExecutionError("invalid adjudication decision payload")
-    if not _SHA.fullmatch(payload_head:=str(value.get("head_sha") or "")) or payload_head!=head: raise AdjudicationExecutionError("adjudication payload head does not match current PR head")
-    return value
-def adjudication_publication(config,issue,head,rows):
-    current=[]; prefix=f"<!-- hermes-swarm-adjudication:{config.swarm_id}:{issue}:"
-    for row in rows:
-        matches=tuple(filter(lambda match:match.group("head")==head,_scoped(str(row.get("body")),_ADJ,prefix,config.swarm_id,issue,"adjudication")))
-        if len(matches)>1: raise UnsafeGitHubObservation(f"duplicate adjudication markers for head {head}")
-        if matches: native_head(row,head); current.append(row)
-    if not current: return None,AdjudicationDecision.NONE
-    if len(current)!=1: raise UnsafeGitHubObservation(f"duplicate adjudication publications for head {head}")
-    data=payload(str(current[0].get("body")),head); raw=str(data.get("decision")).lower(); decision={"accept":AdjudicationDecision.ACCEPT,"changes":AdjudicationDecision.REVISE,"revise":AdjudicationDecision.REVISE}.get(raw)
-    if decision is None: raise AdjudicationExecutionError("invalid adjudication decision")
-    return AdjudicationPublication(head,data),decision
-def _recover_adjudication(config,issue,head,rows):
-    try: return adjudication_publication(config,issue,head,rows)
-    except AdjudicationExecutionError: return None,AdjudicationDecision.NONE
-def _rows(value):
-    if not isinstance(value,list) or not all(isinstance(row,dict) for row in value): raise GitHubReadError("check/status rows are not object lists")
-    return value
-def _actions_success(row): app=row.get("app"); return isinstance(app,dict) and app.get("slug")=="github-actions" and str(row.get("status")).lower()=="completed" and str(row.get("conclusion")).lower()=="success"
-def _bind_checkout(reader,repo,head,row):
-    item=dict(row); needs=_actions_success(item); match=_JOB.search(str(item.get("details_url") or "")); log=reader.text(f"repos/{repo}/actions/jobs/{match.group(1)}/logs") if needs and match else ""; values=set(_RECEIPT.findall(log))|set(_CHECKOUT.findall(log)); item["_exact_checkout"]=not needs or str(item.get("head_sha") or "").lower()==head and values=={head}; return item
-def checks(reader,repo,head): runs=mapping(reader.get(f"repos/{repo}/commits/{head}/check-runs?filter=latest"),"check runs"); status=mapping(reader.get(f"repos/{repo}/commits/{head}/status"),"commit status"); return [_bind_checkout(reader,repo,head,row) for row in _rows(runs.get("check_runs") or [])],_rows(status.get("statuses") or [])
-def _run_state(runs):
-    if not all(str(row.get("status")).lower()=="completed" for row in runs): return CiState.PENDING
-    values={str(row.get("conclusion")).lower() for row in runs}; return CiState.FAILED if values&_BAD else CiState.PASSED if values<=_OK and all(map(lambda row:row.get("_exact_checkout",True),runs)) else CiState.PENDING
-def _status_state(rows): values={str(row.get("state") or "").lower() for row in rows}; return CiState.FAILED if values&{"failure","error"} else CiState.PENDING if "pending" in values else CiState.PASSED
-def ci_state(config,raw):
-    if not config.ci_required: return CiState.NOT_APPLICABLE
-    runs,statuses=raw
-    if not runs and not statuses: return CiState.UNKNOWN
-    run=_run_state(runs)
-    if run is CiState.PENDING: return run
-    states={run,_status_state(statuses)}
-    if CiState.FAILED in states: return CiState.FAILED
-    return CiState.PENDING if CiState.PENDING in states else CiState.PASSED
+# Read-only GitHub semantic authority for issue, dependency, PR, and merge-gate observation.
+# Transport, exact-head publications, and CI reduction live in narrow trust boundaries.
+# This module composes those fresh facts into the planner Observation and fails closed on ambiguity.
+from collections import namedtuple
+from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, ReviewState
+from swarm_v7_github_transport import GhReader, GitHubReadError, UnsafeGitHubObservation, _rows, exact_sha, mapping, native_head, nested_text, positive_int
+from swarm_v7_github_publication import AdjudicationExecutionError, AdjudicationPublication, ReviewerPublication, adjudication_marker, adjudication_publication, payload, review_marker, review_publications, _recover_adjudication
+from swarm_v7_github_ci import checks, ci_state, _run_state, _status_state
+BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at merge_sha labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))
 def _labels(value): return {str(row.get("name") if isinstance(row,dict) else row).lower() for row in value} if isinstance(value,list) else set()
 def _same_repo(issue,repo): value=str(issue.get("repository_url") or "").rstrip("/"); return not value or value==f"https://api.github.com/repos/{repo}"
 def _closure_pr_ok(pr,number): return positive_int(pr.get("number"),"PR number")==number and bool(pr.get("merged_at"))
@@ -150,3 +47,4 @@ def observe_issue(config:ManifestV7,issue:int,reader=None):
     try: return _observe_issue(config,issue,reader if reader is not None else GhReader())
     except Exception as exc:
         reason=f"GitHub observation failed: {exc}"; return GitHubIssueObservation(issue,"UNKNOWN",(),None,Observation(issue,dependency=DependencyState.UNKNOWN,merge_gate=MergeGate.UNKNOWN,unsafe_reason=reason),reason)
+
