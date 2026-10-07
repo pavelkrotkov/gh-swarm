@@ -6,13 +6,16 @@
 # Dependency readiness precedes base ancestry; merged/unsafe observations bypass local execution reads.
 # Adapter failures become one unsafe observation reason rather than partial local truth.
 # plan_once is the sole observe-to-plan handoff used by views and live reconcile.
+from collections import namedtuple
 from dataclasses import replace
 import time
 from swarm_v7 import AdjudicationDecision,DependencyState,ExecutionState,ReviewState,plan_issue
-from swarm_v7_controller import IssueObservation,PlannedIssue,_need
 from swarm_v7_workspace import GitWorkspace,branch_name
 from swarm_v7_github import GhReader,observe_issue as observe_github
 from swarm_v7_kanban import KanbanAdapter,Outcome,semantic_key
+IssueObservation=namedtuple("IssueObservation","github planner execution"); PlannedIssue=namedtuple("PlannedIssue","observation plan"); ActionResult=namedtuple("ActionResult","outcome task_ids detail",defaults=((),"")); ExecutionContext=namedtuple("ExecutionContext","runtime observed reader kanban workspace merger")
+def _need(ok,message):
+    if not ok: raise ValueError(message)
 _STARTUP_GRACE_S=300
 def _default(value,factory): return factory() if value is None else value
 def _starved(facts,cursor): return facts.outcome is Outcome.ACTIVE and not facts.has_run and ((age:=time.time()-float(cursor.get("created_at") or 0))<0 or age>=_STARTUP_GRACE_S)

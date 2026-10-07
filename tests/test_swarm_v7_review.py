@@ -1,5 +1,6 @@
 import importlib
 import shlex
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -80,6 +81,10 @@ class AdjudicationSlotTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_controller_execution_imports_without_controller_preload(self):
+        code=f"import sys; sys.path.insert(0,{str(SCRIPTS)!r}); import swarm_v7_controller_execution"
+        subprocess.run([sys.executable,"-c",code],check=True,capture_output=True,text=True)
+
     def test_reviewer_prompt_pins_native_review_write_and_readback(self):
         for head, slot in ((H1, 1), (H2, 2)):
             with self.subTest(head=head, slot=slot):
