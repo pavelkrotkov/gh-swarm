@@ -3,7 +3,7 @@
 # This module composes those fresh facts into the planner Observation and fails closed on ambiguity.
 from collections import namedtuple
 from swarm_v7 import AdjudicationDecision, CiState, DependencyState, ManifestV7, MergeGate, Observation, ReviewState
-from swarm_v7_github_transport import GhReader, GitHubReadError, UnsafeGitHubObservation, exact_sha, mapping, native_head, nested_text, positive_int
+from swarm_v7_github_transport import GhReader, GitHubReadError, UnsafeGitHubObservation, _rows, exact_sha, mapping, native_head, nested_text, positive_int
 from swarm_v7_github_publication import AdjudicationExecutionError, AdjudicationPublication, ReviewerPublication, adjudication_marker, adjudication_publication, payload, review_marker, review_publications, _recover_adjudication
 from swarm_v7_github_ci import checks, ci_state, _run_state, _status_state
 BlockerObservation=namedtuple("BlockerObservation","issue_number state internal merged_at"); PullRequestObservation=namedtuple("PullRequestObservation","number url state base head draft mergeable merge_state merged_at merge_sha labels reviewers adjudication"); GitHubIssueObservation=namedtuple("GitHubIssueObservation","issue_number issue_state blockers pull_request planner unsafe_reason",defaults=(None,))

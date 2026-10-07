@@ -4,7 +4,7 @@
 import base64,json,re
 from collections import namedtuple
 from swarm_v7 import AdjudicationDecision, ReviewState
-from swarm_v7_github_transport import UnsafeGitHubObservation, exact_sha, native_head
+from swarm_v7_github_transport import UnsafeGitHubObservation, _SHA, exact_sha, native_head
 class AdjudicationExecutionError(UnsafeGitHubObservation): pass
 ReviewerPublication=namedtuple("ReviewerPublication","slot head"); AdjudicationPublication=namedtuple("AdjudicationPublication","head data")
 _REVIEW=re.compile(r"<!-- hermes-swarm-review:(?P<swarm>[^:]+):(?P<issue>\d+):v(?P<slot>\d+):(?P<head>[0-9a-f]{40}) -->"); _ADJ=re.compile(r"<!-- hermes-swarm-adjudication:(?P<swarm>[^:]+):(?P<issue>\d+):(?P<head>[0-9a-f]{40}) -->"); _DECISION=re.compile(r"<!-- hermes-swarm-decision-b64:([A-Za-z0-9_=-]{32,1048576}) -->")
