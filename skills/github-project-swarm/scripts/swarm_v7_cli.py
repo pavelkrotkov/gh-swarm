@@ -1,54 +1,17 @@
 #!/usr/bin/env python3
-# Closed schema-7 CLI lifecycle: parsing, durable config/cursors, views, reconcile, admin.
-# Local state never supplies semantic workflow truth; GitHub is re-observed by plan_once.
-# Writes are atomic/fsynced, reconcile is flock-serialized, and the journal is diagnostics.
-# Service administration controls only swarm units and never touches the Hermes gateway.
-import argparse, errno, json, os, re, shlex, sys, tempfile, time, uuid; from contextlib import contextmanager; from dataclasses import replace; from pathlib import Path; from types import SimpleNamespace; from swarm_v7 import Action, ManifestV7; from swarm_v7_cli_process import run_command, subprocess_timeout; from swarm_v7_controller import ActionResult, RuntimeManifest, apply_plan, observation_payload, plan_once, plan_payload; from swarm_v7_github import GhReader; from swarm_v7_kanban import KanbanAdapter; from swarm_v7_merge import MergeRequestError; from swarm_v7_workspace import GitWorkspace
-try: import fcntl
-except ImportError: fcntl=None
-HOME=Path(os.environ.get("HERMES_HOME",Path.home()/".hermes")).expanduser(); STATE=Path(os.environ.get("HERMES_SWARM_STATE_DIR",HOME/"swarms")).expanduser(); _REQUIRED=("ponytail","github-project-reviewer","github-project-adjudicator","github-project-swarm"); _TIMER="hermes-swarm-reconcile.timer"; _SERVICE="hermes-swarm-reconcile.service"; _SUMMARY=("success","partial_failure")
-def manifest_path(swarm_id): return STATE/f"{swarm_id}.json"
-def manifests(): STATE.mkdir(parents=True,exist_ok=True); return sorted(STATE.glob("*.json"))
-def selected(*,name=None,all_swarms=False):
-    if name:
-        if not (path:=manifest_path(name)).exists(): raise RuntimeError(f"unknown swarm {name}")
-        return [path]
-    if len(paths:=manifests())==1 or all_swarms: return paths
-    raise RuntimeError("Specify --name or --all")
-@contextmanager
-def locked(path,*,nonblocking=False):
-    if fcntl is None: raise RuntimeError("swarm reconcile locking requires POSIX flock support")
-    path.parent.mkdir(parents=True,exist_ok=True)
-    with open(path,"w",encoding="utf-8") as handle: fcntl.flock(handle,fcntl.LOCK_EX|(fcntl.LOCK_NB if nonblocking else 0)); yield
-def _fsync_directory(path):
-    if os.name=="nt": return
-    fd=os.open(path,os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
-    try: os.fsync(fd)
-    except OSError as exc:
-        if exc.errno not in (errno.EINVAL,errno.ENOTSUP): raise
-    finally: os.close(fd)
-def save(runtime):
-    STATE.mkdir(parents=True,exist_ok=True); target=manifest_path(runtime.config.swarm_id); fd,tmp=tempfile.mkstemp(prefix=f".{runtime.config.swarm_id}.",suffix=".tmp",dir=STATE)
-    try:
-        with os.fdopen(fd,"w",encoding="utf-8") as out: json.dump(runtime.to_dict(),out,ensure_ascii=False,indent=2); out.write("\n"); out.flush(); os.fsync(out.fileno())
-        os.replace(tmp,target); _fsync_directory(STATE)
-    finally: Path(tmp).unlink(missing_ok=True)
-def load(path):
-    raw=json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw,dict): raise RuntimeError(f"{path}: swarm manifest must be a JSON object")
-    if raw.get("schema")!=7: raise RuntimeError(f"{path}: unsupported swarm schema {raw.get('schema')!r}; schema 5/6 migration is intentionally disabled. Initialize a fresh v7 swarm.")
-    return RuntimeManifest.from_dict(raw)
-def _journal_outcome(error,result): return "error" if error else "none" if result is None else result.outcome
-def journal(runtime,issue,planned,result,elapsed_ms,error=None,*,correlation_id=None,event="reconcile",receipt=None):
-    fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); gates=[] if planned is None else observation_payload(planned.observation,runtime.config)["gates"]; row={"ts":time.time(),"correlation_id":correlation_id,"event":event,"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":_journal_outcome(error,result),"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,"gates":gates,**fields,**(receipt or {})}; STATE.mkdir(parents=True,exist_ok=True)
-    with open(STATE/f"{runtime.config.swarm_id}.journal.jsonl","a",encoding="utf-8") as out: out.write(json.dumps(row,ensure_ascii=False,sort_keys=True)+"\n"); return row
-def _merge_attribution(runtime,issue,planned):
-    pr=planned.observation.github.pull_request
-    if pr is None: return None
-    path=STATE/f"{runtime.config.swarm_id}.journal.jsonl"; rows=[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines(keepends=True) if line.endswith("\n")] if path.exists() else []; matches=list(filter(lambda row:(row.get("issue"),row.get("pr"),row.get("head"))==(issue,pr.number,pr.head),rows))
-    intent=next(filter(lambda row:row.get("event")=="merge_intent",reversed(matches)),None); cid=(intent or {}).get("correlation_id"); outcome=next(filter(lambda row:(row.get("event"),row.get("correlation_id"))==("merge_outcome",cid),reversed(matches)),None); value=(outcome or {}).get("merge_outcome")
-    state={(False,False,None):"none",(True,False,None):"observed_external",(True,True,None):"confirmed_after_unknown_request_outcome",(True,True,"unknown"):"confirmed_after_unknown_request_outcome",(True,True,"requested"):"controller_request_confirmed",(True,True,"github_confirmed"):"controller_request_confirmed",(True,True,"rejected"):"observed_external_after_rejected_request",(False,True,None):"outcome_unknown",(False,True,"unknown"):"outcome_unknown",(False,True,"requested"):"request_attempted",(False,True,"rejected"):"request_rejected"}.get((bool(pr.merged_at),bool(intent),value))
-    return {"state":state,"correlation_id":cid,"request_outcome":value,"merged_at":pr.merged_at,"merge_sha":getattr(pr,"merge_sha",None)}
+# Closed schema-7 CLI: read-only views, one-pass reconcile, parser, and command dispatch.
+# State durability and operator initialization/admin live in cohesive sibling boundaries.
+import argparse,json,sys,time,uuid
+from swarm_v7 import Action
+from swarm_v7_cli_process import subprocess_timeout
+import swarm_v7_cli_state as state
+from swarm_v7_cli_state import HOME, manifest_path, selected, locked, load, save, journal, _fsync_directory, _merge_attribution, _reconcile_context
+STATE=state.STATE
+from swarm_v7_cli_runtime import _REQUIRED, _SERVICE, _TIMER, _timer_health, activate, configure, disable, doctor, init, prepare, retire, systemctl, validate
+from swarm_v7_controller import ActionResult, apply_plan, observation_payload, plan_once, plan_payload
+from swarm_v7_kanban import KanbanAdapter
+from swarm_v7_merge import MergeRequestError
+_SUMMARY=("success","partial_failure")
 def _receipt(runtime,planned,outcome): pr=planned.observation.github.pull_request; planner=planned.observation.planner; return {"pr":pr.number,"head":pr.head,"policy":runtime.config.merge_policy,"gate_evidence":{"pr_url":pr.url,"issue_state":planned.observation.github.issue_state,"dependency":planner.dependency.value,"ci":planner.ci.value,"review":planner.review.value,"adjudication":planner.adjudication_decision.value,"merge_gate":planner.merge_gate.value,"base_current":planner.base_current,"blockers":observation_payload(planned.observation,runtime.config)["gates"]},"merge_outcome":outcome}
 def _apply_with_receipt(runtime,planned,correlation_id):
     pr=planned.observation.github.pull_request; request=planned.plan.action is Action.MERGE and pr is not None and pr.merged_at is None
@@ -57,46 +20,6 @@ def _apply_with_receipt(runtime,planned,correlation_id):
     try: result=apply_plan(runtime,planned)
     except Exception as exc: journal(runtime,planned.observation.github.issue_number,planned,None,0,exc,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,"rejected" if isinstance(exc,MergeRequestError) else "unknown")); raise
     journal(runtime,planned.observation.github.issue_number,planned,result,0,correlation_id=correlation_id,event="merge_outcome",receipt=_receipt(runtime,planned,result.outcome)); return result
-def _reconcile_context(correlation_id,rows): return correlation_id or uuid.uuid4().hex,[] if rows is None else rows
-def _model(value):
-    if len(parts:=shlex.split(value))==1: return parts[0]
-    if len(parts)==3 and parts[1]=="--provider": return shlex.join(parts)
-    raise ValueError(f"invalid model spec: {value!r}")
-def _issues(args,repo,reader):
-    numbers=list(map(int,filter(str.strip,args.issues.split(",")))) if args.issues else [int(row["number"]) for row in reader.list(f"repos/{repo}/issues/{args.epic}/sub_issues")]
-    if not numbers: raise RuntimeError("No issues found; use an epic with native sub-issues or --issues")
-    if any(str(reader.get(f"repos/{repo}/issues/{number}").get("state")).upper()!="OPEN" for number in numbers): raise RuntimeError("issue set contains non-open issues")
-    return numbers
-def _repo(args,cwd): return args.repo if args.repo else run_command(["gh","repo","view","--json","nameWithOwner","-q",".nameWithOwner"],cwd)
-def _validated_runtime(args):
-    timeout=subprocess_timeout(); cwd=str(Path(args.repo_path).resolve()); repo=_repo(args,cwd); GitWorkspace(cwd,timeout_s=timeout).validate_binding(repo); reader=GhReader(timeout_s=timeout); numbers=_issues(args,repo,reader); default=reader.get(f"repos/{repo}").get("default_branch")
-    if not default: raise RuntimeError("GitHub did not return a default branch")
-    reviewers=tuple(map(_model,args.reviewer)); seed=args.epic if args.epic is not None else numbers[0]; name=args.name if args.name else f"{repo.split('/')[-1]}-{seed}"; swarm=re.sub(r"[^a-z0-9-]+","-",name.lower()).strip("-")[:50]
-    if manifest_path(swarm).exists(): raise RuntimeError(f"swarm already exists: {swarm}")
-    adjudicator=_model(args.adjudicator) if args.adjudicator else reviewers[0]; config=ManifestV7(swarm,repo,default,tuple(numbers),_model(args.worker),reviewers,adjudicator,args.ci_mode=="required",paused=args.paused,merge_policy=args.merge_policy); return RuntimeManifest(config,cwd,args.board if args.board else swarm,args.assignee,args.max_execution_attempts,args.max_runtime,{})
-def init(args,reconcile_fn=None):
-    runtime=_validated_runtime(args); KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).create_board(f"GitHub swarm {runtime.config.repo}"); save(runtime)
-    if not runtime.config.paused and reconcile_fn is not None and (errors:=reconcile_fn(runtime)): raise RuntimeError("initial reconciliation encountered errors:\n"+"\n".join(errors))
-    print(f"Initialized {runtime.config.swarm_id}: {len(runtime.config.issues)} issues, schema=7, board={runtime.board}, merge={runtime.config.merge_policy}, {'paused' if runtime.config.paused else 'active'}"); print(f"Manifest: {manifest_path(runtime.config.swarm_id)}"); return runtime
-def doctor(args):
-    for cmd in (["git","--version"],["gh","--version"],["hermes","--version"],["gh","auth","status"]): run_command(cmd)
-    if missing:=[skill for skill in _REQUIRED if skill not in run_command(["env","COLUMNS=1000","hermes","skills","list"])]: raise RuntimeError(f"missing required skills: {', '.join(missing)}")
-    timeout=subprocess_timeout(); KanbanAdapter("__contract_probe__",timeout_s=timeout).probe_contract()
-    if args.repo and not GhReader(timeout_s=timeout).get(f"repos/{args.repo}").get("default_branch"): raise RuntimeError(f"cannot read repository {args.repo}")
-    _timer_health(); print("doctor: ok; schema-7 adapters readable; no writes performed")
-def validate(*,repo=None,name=None,all_swarms=True):
-    doctor(SimpleNamespace(repo=repo)); paths=selected(name=name,all_swarms=all_swarms if not name else False)
-    for path in paths:
-        runtime=load(path); plans=tuple(plan_once(runtime,issue) for issue in runtime.config.issues); bad=next((item for item in plans if item.observation.planner.unsafe_reason),None)
-        if bad: raise RuntimeError(f"{runtime.config.swarm_id} #{bad.observation.github.issue_number}: {bad.observation.planner.unsafe_reason}")
-    print("validate: ok; no swarm actions performed")
-def systemctl(*args,check=True): return run_command(["systemctl","--user",*args],check=check)
-def _timer_health():
-    values=dict(line.split("=",1) for line in systemctl("show",_TIMER,"-p","ActiveState","-p","NextElapseUSecMonotonic",check=False).splitlines() if "=" in line); dead=values.get("ActiveState")=="active" and values.get("NextElapseUSecMonotonic") in {"","0"}
-    if dead and systemctl("show",_SERVICE,"-p","ActiveState","--value",check=False) not in {"active","activating"}: raise RuntimeError(f"{_TIMER} is active but has no next elapse; run `systemctl --user restart {_TIMER}`")
-def prepare(): print("prepare: schema 7 needs no prompt/profile projection; execution artifacts are prepared lazily")
-def activate(*,repo=None): validate(repo=repo,all_swarms=True); systemctl("daemon-reload"); systemctl("enable","--now",_TIMER); _timer_health(); print(f"activated {_TIMER}")
-def disable(): systemctl("disable","--now",_TIMER,check=False); systemctl("stop",_SERVICE,check=False); print("disabled Hermes swarm reconciliation; Hermes gateway was not touched")
 def _snapshot(runtime,issue,planned): return {"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"merge_policy":runtime.config.merge_policy,"observation":observation_payload(planned.observation,runtime.config),"plan":plan_payload(planned.plan),"merge_attribution":_merge_attribution(runtime,issue,planned)}
 def _render(row): plan=row["plan"]; action=plan["action"] or (f"suppressed:{plan['would_action']}" if plan["would_action"] else "none"); pr=(row["observation"]["pr"] or {}).get("number","-"); head=(plan.get("pr_head") or "-")[:12]; attribution=(row.get("merge_attribution") or {}).get("state","-"); return f"{row['swarm']} [{row['repo']}] #{row['issue']}: state={row['observation']['issue_state']} merge={row['merge_policy']} {plan['phase']} action={action} pr=#{pr} head={head} gates={json.dumps(row['observation']['gates'],separators=(',',':'))} merge_source={attribution} — {plan['reason']}"
 def dry_run(*,name=None,all_swarms=False,json_output=False):
@@ -125,24 +48,12 @@ def reconcile(args):
     for path in selected(name=args.name,all_swarms=args.all):
         summary={"swarm":path.stem,"status":"success","issues":[],"errors":[]}
         try:
-            with locked(STATE/f".reconcile.{path.stem}.lock",nonblocking=True): current=reconcile_runtime(load(path),correlation_id=correlation_id,rows=summary["issues"]); errors.extend(current); summary["errors"].extend(current); summary["status"]=_SUMMARY[bool(current)]
+            with locked(state.STATE/f".reconcile.{path.stem}.lock",nonblocking=True): current=reconcile_runtime(load(path),correlation_id=correlation_id,rows=summary["issues"]); errors.extend(current); summary["errors"].extend(current); summary["status"]=_SUMMARY[bool(current)]
         except BlockingIOError: summary["status"]="skipped_busy"; partial=True; print(f"{path.stem}: reconcile already running; skipped",file=sys.stderr)
         except Exception as exc: error=f"{path.stem}: {exc}"; errors.append(error); summary["errors"].append(error); summary["status"]="partial_failure"
         swarms.append(summary)
     if args.json: print(json.dumps({"correlation_id":correlation_id,"status":_SUMMARY[max(bool(errors),partial)],"swarms":swarms},ensure_ascii=False,sort_keys=True))
     if errors: raise RuntimeError("reconciliation encountered errors:\n"+"\n".join(errors))
-def retire(args):
-    reason=args.reason.strip(); path=selected(name=args.name)[0]
-    if not reason: raise RuntimeError("--reason must be non-empty")
-    with locked(STATE/f".reconcile.{path.stem}.lock"):
-        runtime=load(path); issue=args.issue
-        if issue not in runtime.config.issues: raise RuntimeError(f"issue #{issue} is not active in swarm {runtime.config.swarm_id}")
-        tasks=KanbanAdapter(runtime.board,runtime.repo_path,subprocess_timeout()).block_issue(runtime.config.swarm_id,issue,f"retired by operator: {reason}"); runtime.config=replace(runtime.config,issues=tuple(number for number in runtime.config.issues if number!=issue)); runtime.retired_issues[str(issue)]=reason; save(runtime); journal(runtime,issue,None,ActionResult("retired",tasks,reason),0)
-    print(f"{runtime.config.swarm_id} [{runtime.config.repo}] #{issue}: retired from active scope — {reason}")
-def configure(args,**changes):
-    for path in selected(name=args.name,all_swarms=getattr(args,"all",False)):
-        with locked(STATE/f".reconcile.{path.stem}.lock"):
-            runtime=load(path); runtime.config=replace(runtime.config,**changes); save(runtime); print(f"{runtime.config.swarm_id}: "+", ".join(f"{key}={value}" for key,value in changes.items()))
 def _selection(parser): parser.add_argument("--name"); parser.add_argument("--all",action="store_true")
 def build_parser(handlers,root=None):
     root=root or argparse.ArgumentParser(prog="hermes-swarm"); sub=root.add_subparsers(dest="swarm_command",required=True); p=sub.add_parser("init"); p.add_argument("--repo"); p.add_argument("--repo-path",default="."); group=p.add_mutually_exclusive_group(required=True); group.add_argument("--epic",type=int); group.add_argument("--issues"); p.add_argument("--name"); p.add_argument("--board"); p.add_argument("--assignee",required=True); p.add_argument("--worker",required=True); p.add_argument("--reviewer",action="append",required=True); p.add_argument("--adjudicator"); p.add_argument("--max-runtime",default="8h"); p.add_argument("--max-execution-attempts",type=int,default=3); p.add_argument("--ci-mode",choices=["required","none"],default="required"); p.add_argument("--merge-policy",choices=["automatic","manual"],required=True); p.add_argument("--paused",action="store_true"); p.set_defaults(fn=handlers["init"])
@@ -158,3 +69,4 @@ def main(): args=_parser().parse_args(); args.fn(args)
 if __name__=="__main__":
     try: main()
     except Exception as exc: print(f"hermes-swarm: {exc}",file=sys.stderr); raise SystemExit(1)
+

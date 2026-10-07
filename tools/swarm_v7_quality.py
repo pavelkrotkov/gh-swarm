@@ -10,9 +10,9 @@ from radon.metrics import mi_visit
 
 ROOT=Path(__file__).resolve().parents[1]; SKILL=ROOT/"skills/github-project-swarm"; SCRIPTS=SKILL/"scripts"
 PLUGIN_REL="hermes-plugin/__init__.py"; CLI_REL="scripts/swarm_v7_cli.py"; DYNAMIC_RUNTIME_EDGES={PLUGIN_REL:(CLI_REL,)}
-CONTROLLER_MODULE_NAMES=("swarm_v7_controller.py",); CLI_MODULE_NAMES=("swarm_v7_cli.py","swarm_v7_cli_process.py"); CLI_CONTROLLER_MODULE_NAMES=("swarm_v7_cli.py",); PLANNER_MODULE_NAMES=("swarm_v7.py",); CORE_CONTROLLER_MODULE_NAMES=(*PLANNER_MODULE_NAMES,*CONTROLLER_MODULE_NAMES,*CLI_CONTROLLER_MODULE_NAMES)
-CORE_PATHS={("swarm_v7.py","plan_issue"):"planner",("swarm_v7_controller.py","observe_issue"):"observer",("swarm_v7_controller.py","apply_plan"):"executor",("swarm_v7_controller.py","dispatch_attempts"):"executor-dispatch",("swarm_v7_cli.py","reconcile_runtime"):"cli-reconcile",("swarm_v7_cli.py","init"):"cli-init",("swarm_v7_merge.py","request_exact_head_merge"):"merge"}
-REGRESSION="regression"; QUALIFICATION="qualification"; MAX_FUNCTION_LINES=60; MAX_CYCLOMATIC=8; MAX_CORE_CYCLOMATIC=6; MAX_COGNITIVE=15; MAX_NESTING=4; MAX_CORE_LOC=1000; COHESION_REVIEW_LOC=350; MAX_WHOLE_RUNTIME_MODULES=20; FINAL_RUNTIME_LOC=687
+CONTROLLER_MODULE_NAMES=("swarm_v7_controller.py","swarm_v7_controller_runtime.py","swarm_v7_controller_execution.py"); CLI_MODULE_NAMES=("swarm_v7_cli.py","swarm_v7_cli_process.py","swarm_v7_cli_state.py","swarm_v7_cli_runtime.py"); CLI_CONTROLLER_MODULE_NAMES=("swarm_v7_cli.py","swarm_v7_cli_state.py","swarm_v7_cli_runtime.py"); PLANNER_MODULE_NAMES=("swarm_v7.py","swarm_v7_model.py"); CORE_CONTROLLER_MODULE_NAMES=(*PLANNER_MODULE_NAMES,*CONTROLLER_MODULE_NAMES,*CLI_CONTROLLER_MODULE_NAMES)
+CORE_PATHS={("swarm_v7.py","plan_issue"):"planner",("swarm_v7_controller_runtime.py","observe_issue"):"observer",("swarm_v7_controller_execution.py","apply_plan"):"executor",("swarm_v7_controller_execution.py","dispatch_attempts"):"executor-dispatch",("swarm_v7_cli.py","reconcile_runtime"):"cli-reconcile",("swarm_v7_cli_runtime.py","init"):"cli-init",("swarm_v7_merge.py","request_exact_head_merge"):"merge"}
+REGRESSION="regression"; QUALIFICATION="qualification"; MAX_FUNCTION_LINES=60; MAX_CYCLOMATIC=8; MAX_CORE_CYCLOMATIC=6; MAX_COGNITIVE=15; MAX_NESTING=4; MIN_MAINTAINABILITY=75.0; MAX_CORE_LOC=1000; COHESION_REVIEW_LOC=350; MAX_WHOLE_RUNTIME_MODULES=20; FINAL_RUNTIME_LOC=1000
 class RuntimeScopeError(ValueError): pass
 @dataclass(frozen=True)
 class FunctionMetric: name:str; line:int; loc:int; cyclomatic:int; cognitive:int; nesting:int
@@ -130,9 +130,10 @@ def evaluate(*,root=ROOT,scripts=SCRIPTS,mode=QUALIFICATION,base_sha=None):
     skill=scripts.parent; sources=working_runtime_sources(skill); scope=derive_runtime_scope(sources); active=tuple(skill/path for path in scope); total=core=0
     print(f"swarm v7 quality metrics (mode={mode})"); print(f"  whole runtime scope: {', '.join(scope)}")
     for path in active:
-        text=path.read_text(encoding="utf-8"); loc=code_loc(text); metrics=function_metrics(text); mi=mi_visit(text,multi=True); total+=loc; core+=loc if path.name in CORE_CONTROLLER_MODULE_NAMES else 0
+        text=path.read_text(encoding="utf-8"); loc=code_loc(text); metrics=function_metrics(text); mi=mi_visit(text,multi=False); total+=loc; core+=loc if path.name in CORE_CONTROLLER_MODULE_NAMES else 0
         print(f"  {path.relative_to(skill).as_posix()}: loc={loc} mi={mi:.1f}")
         rows,_=complexity_failures(path,text,mode=QUALIFICATION); failures += rows + qualification_metric_failures(path,loc,metrics)
+        if path.parent==SCRIPTS and path.name.startswith("swarm_v7") and mi<=MIN_MAINTAINABILITY: failures.append(f"{path.name}:<module>:1 maintenance_index={mi:.1f} <= required>{MIN_MAINTAINABILITY:.1f}")
         for metric in metrics: print(f"    {metric.name}:{metric.line} loc={metric.loc} cyclomatic={metric.cyclomatic} cognitive={metric.cognitive} nesting={metric.nesting}")
     print(f"  core controller LOC: {core} / {MAX_CORE_LOC}"); print(f"  current whole runtime: {total} LOC in {len(active)} modules")
     if core>MAX_CORE_LOC: failures.append(f"<core-controller>:<aggregate>:1 code_loc={core} > {MAX_CORE_LOC}")

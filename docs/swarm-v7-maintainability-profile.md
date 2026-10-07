@@ -1,48 +1,37 @@
 # Swarm v7 maintainability profile
 
-Issue #114 closes the final quality follow-up after the #103 whole-runtime convergence.
-The active runtime remains the reachability-derived scope rooted at the Hermes plugin; this
-policy does not change what is counted.
+Issue #54 restores the final-qualification Maintenance Index requirement that the earlier
+10-module convergence had replaced with direct structural limits. The runtime scope remains
+reachability-derived from the Hermes plugin; executable code is not excluded or moved to an
+uncounted surface.
 
-## Why per-file MI > 75 is no longer an acceptance gate
+## Enforced profile
 
-At the #114 baseline (`0d41f30c23aad61e1abd1f4dccae7d89b9ad2dbf`) the complete active runtime is
-690 counted Python LOC in 10 modules. The largest module is only 148 code LOC, every
-function is already below 60 LOC, and cognitive complexity and nesting are already within
-the absolute limits. Nevertheless Radon reports per-file Maintenance Index values from
-17.4 to 62.4, so all ten files fail the historical `MI > 75` threshold.
+`python tools/swarm_v7_quality.py --qualification` and canonical `make check` enforce:
 
-That result is not aligned with the property the final convergence is trying to protect.
-Radon MI is an aggregate of Halstead volume, cyclomatic complexity, source lines and a
-comment term. Applied as a hard threshold to each very small runtime file, it can be
-improved without simplifying behavior by adding comments or splitting cohesive ownership
-into more files. Both responses conflict with #103/#114: comment padding is metric gaming,
-and helper/file fragmentation would reverse the deliberate consolidation.
+- Radon 6.0.1 `mi_visit(source, False) > 75` for every active `scripts/swarm_v7*.py` module;
+- cyclomatic complexity < 8 for every production function, with named planner/executor/merge
+  paths <= 6;
+- cognitive complexity <= 15 and maximum nesting <= 4;
+- no production function > 60 source lines;
+- no active module > 350 counted code LOC;
+- whole reachable runtime <= 1,000 counted Python LOC and <= 20 modules;
+- core-controller aggregate <= 1,000 LOC.
 
-We therefore retain MI in qualification output as a diagnostic trend only. Runtime source
-is not padded, split, or excluded to improve the number.
+The 1,000-LOC ceiling is the parent #55 qualification limit. The former 687-LOC stretch
+target was introduced as part of the MI replacement; restoring MI requires a small number of
+real responsibility/trust-boundary splits, so retaining that replacement ceiling would reward
+the same compressed ownership that caused the qualification failure.
 
-## Enforced direct profile
+## Separation rules
 
-`python tools/swarm_v7_quality.py --qualification` and canonical `make check` enforce the
-properties that MI was intended to proxy, directly:
+Splits are limited to concrete boundaries already present in the behavior: normalized model
+vs pure planning; CLI durable state vs operator initialization/admin vs reconcile; controller
+observation vs execution; GitHub transport vs exact-head publication vs CI reduction; merge
+ledger vs mutation; Git transport vs worktree policy; and immutable execution/task contracts.
+No file-per-helper layer, compatibility stack, dynamic import inheritance, minification, or
+scope exclusion is permitted.
 
-- whole reachable runtime: at most 684 counted Python LOC and at most 20 modules;
-- each active module: at most 350 counted code LOC;
-- every production function: at most 60 source lines;
-- cyclomatic complexity: at most 8 for every function;
-- named planner/observer/executor/merge/CLI core paths: at most 6;
-- cognitive complexity: at most 15;
-- maximum nesting depth: at most 4;
-- core-controller aggregate: at most 1000 counted LOC and strictly smaller than the pinned pre-v7 controller baseline;
-- the runtime scope must remain reachability-derived from the active Hermes plugin and all required local imports must resolve.
-
-The canonical validation pipeline additionally runs the full unit/behavior suite, source
-and manifest validation, shell syntax checks, the AST dead-code boundary and secret scan.
-Those checks preserve crash recovery, exact-head authority, plugin behavior, bounded
-execution and the other runtime contracts while the direct profile constrains structural
-complexity.
-
-This is a metric replacement, not a silent threshold relaxation: only the aggregate
-per-file MI predicate is retired, its measured value remains visible, and every direct
-size/control-flow bound is enforced as a failing canonical gate.
+Comments describe authority and crash-safety invariants only. They are not added in bulk to
+raise MI; qualification uses the same Radon command cited by #54 and the direct complexity,
+LOC, nesting, behavioral, dead-code, and host checks remain independent backstops.

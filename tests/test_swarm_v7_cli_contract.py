@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, Mock, patch
 ROOT=Path(__file__).parents[1]; SCRIPTS=ROOT/"skills"/"github-project-swarm"/"scripts"
 if str(SCRIPTS) not in sys.path: sys.path.insert(0,str(SCRIPTS))
 import swarm_v7_cli as cli
+import swarm_v7_cli_runtime as cli_runtime
+import swarm_v7_cli_state as cli_state
 from swarm_v7 import Action, ManifestV7, Observation, Phase, Plan
 from swarm_v7_controller import ActionResult, IssueObservation, PlannedIssue, RuntimeManifest, plan_payload
 from swarm_v7_github import GitHubIssueObservation
@@ -22,12 +24,12 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(adapter.watchdog.call_count,1); self.assertEqual(planner.call_count,3); self.assertIs(apply.call_args.args[1],item); self.assertEqual(plan_payload(item.plan)["action"],"START_IMPLEMENTATION")
     def test_merge_policy_command_persists_and_status_reports_it(self):
         rt=runtime()
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),redirect_stdout(StringIO()):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli_state,"STATE",Path(td)),redirect_stdout(StringIO()):
             cli.save(rt); args=cli._parser().parse_args(["merge-policy","--name","demo","automatic"]); args.fn(args); saved=cli.load(Path(td)/"demo.json"); row=cli._snapshot(saved,7,planned())
         self.assertEqual((saved.config.merge_policy,row["merge_policy"]),("automatic","automatic")); self.assertIn("merge=automatic",cli._render(row))
     def test_merge_action_reloads_policy_and_replans_before_apply(self):
         rt=runtime(); rt.config=replace(rt.config,merge_policy="automatic"); first=planned()._replace(plan=Plan(Phase.READY_TO_MERGE,Action.MERGE,"eligible","1"*40,"merge")); manual=planned()._replace(plan=Plan(Phase.AWAITING_MANUAL_MERGE,None,"manual merge policy","1"*40,None)); adapter=Mock(); adapter.watchdog.return_value={}
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli_state,"STATE",Path(td)):
             cli.save(rt)
             def plan(current,_issue):
                 if current.config.merge_policy=="automatic": changed=cli.load(Path(td)/"demo.json"); changed.config=replace(changed.config,merge_policy="manual"); cli.save(changed); return first
@@ -36,7 +38,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(planner.call_count,2); self.assertEqual(apply.call_args.args[0].config.merge_policy,"manual"); self.assertIs(apply.call_args.args[1],manual)
     def test_retire_persists_reason_and_removes_issue_from_active_scope(self):
         rt=runtime(); adapter=Mock(); adapter.watchdog.return_value={}; adapter.block_issue.return_value=("task-7",)
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),redirect_stdout(StringIO()):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"KanbanAdapter",return_value=adapter),redirect_stdout(StringIO()):
             cli.save(rt); cli.retire(SimpleNamespace(name="demo",issue=7,reason="closed externally")); saved=cli.load(Path(td)/"demo.json"); event=json.loads((Path(td)/"demo.journal.jsonl").read_text())
             with self.assertRaisesRegex(RuntimeError,r"retired.*closed externally"): cli.explain(name="demo",issue=7)
             with patch.object(cli,"plan_once") as plan: self.assertEqual(cli.reconcile_runtime(saved),[]); plan.assert_not_called()
@@ -45,15 +47,15 @@ class CliContractTests(unittest.TestCase):
         adapter.block_issue.assert_called_once_with("demo",7,"retired by operator: closed externally"); self.assertEqual(saved.config.issues,()); self.assertEqual(saved.retired_issues,{"7":"closed externally"}); self.assertEqual((event["outcome"],event["detail"],event["task_ids"]),("retired","closed externally",["task-7"])); self.assertIn("no active issues",status.getvalue()); self.assertNotIn("no swarms configured",status.getvalue())
     def test_all_reconcile_isolates_busy_swarm_and_surfaces_other_failure(self):
         rt=runtime(); busy=MagicMock(); busy.__enter__.side_effect=BlockingIOError; err=StringIO(); args=Mock(dry_run=False,json=False,all=True); args.name=None
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"locked",side_effect=[busy,MagicMock(),MagicMock()]),patch.object(cli,"load",return_value=rt),patch.object(cli,"reconcile_runtime",side_effect=[["b #7: injected"],[]]) as run,redirect_stderr(err):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli_state,"STATE",Path(td)),patch.object(cli,"locked",side_effect=[busy,MagicMock(),MagicMock()]),patch.object(cli,"load",return_value=rt),patch.object(cli,"reconcile_runtime",side_effect=[["b #7: injected"],[]]) as run,redirect_stderr(err):
             for name in ("a.json","b.json","c.json"): (Path(td)/name).touch()
             with self.assertRaisesRegex(RuntimeError,"injected"): cli.reconcile(args)
         self.assertIn("a: reconcile already running; skipped",err.getvalue()); self.assertEqual(run.call_count,2)
     def test_unsafe_observation_is_journaled_and_validate_fails_closed(self):
         rt=runtime(); obs=Observation(issue_number=7,unsafe_reason="observation failed"); gh=GitHubIssueObservation(7,"CLOSED",(),None,obs,"observation failed"); item=PlannedIssue(IssueObservation(gh,obs,{}),Plan(Phase.EXECUTION_STALLED,None,"unsafe observation: observation failed",None,None))
         adapter=Mock(); adapter.watchdog.return_value={}
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",return_value=item),patch.object(cli,"save") as save:
+        with tempfile.TemporaryDirectory() as td,patch.object(cli_state,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",return_value=item),patch.object(cli,"save") as save:
             errors=cli.reconcile_runtime(rt); event=json.loads((Path(td)/"demo.journal.jsonl").read_text())
-            with patch.object(cli,"doctor"),patch.object(cli,"selected",return_value=[Path("demo.json")]),patch.object(cli,"load",return_value=rt),self.assertRaisesRegex(RuntimeError,r"demo #7: observation failed"): cli.validate(name="demo")
+            with patch.object(cli_runtime,"doctor"),patch.object(cli_runtime,"selected",return_value=[Path("demo.json")]),patch.object(cli_runtime,"load",return_value=rt),self.assertRaisesRegex(RuntimeError,r"demo #7: observation failed"): cli.validate(name="demo")
         self.assertEqual(errors,["demo #7: observation failed"]); self.assertEqual(event["outcome"],"error"); self.assertIn("demo [owner/repo] #7: state=CLOSED",cli._render(cli._snapshot(rt,7,item))); save.assert_not_called()
 if __name__=="__main__": unittest.main()
