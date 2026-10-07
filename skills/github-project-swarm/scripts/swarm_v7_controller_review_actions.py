@@ -4,7 +4,7 @@
 from pathlib import Path
 import time
 from swarm_v7_controller_manifest import ActionResult
-from swarm_v7_controller_observation import _attempts
+from swarm_v7_controller_liveness import _attempts
 from swarm_v7_execution import semantic_key
 from swarm_v7_review import ExactHeadTarget,reconcile_adjudication,reconcile_reviewers
 def _target(ctx):

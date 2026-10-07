@@ -4,7 +4,7 @@
 # Cursors are persisted before observing the created task so a crash cannot lose its attempt identity.
 import time
 from swarm_v7_controller_manifest import ActionResult
-from swarm_v7_controller_observation import _attempts
+from swarm_v7_controller_liveness import _attempts
 from swarm_v7_execution import TaskSpec,Outcome,parse_model,semantic_key,worker_body
 from swarm_v7_workspace import WorkspaceSpec,branch_name,worktree_path
 def dispatch_attempts(runtime,adapter,key,spec):
