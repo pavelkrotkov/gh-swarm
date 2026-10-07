@@ -2,11 +2,6 @@ import os, sys
 from pathlib import Path
 _SKILL="github-project-swarm"; _CLI="swarm_v7_cli.py"
 # Only an active Skillfleet runtime may supply the executable; local shadows fail closed.
-# Resolution accepts exactly one Skillfleet-owned skill root; ambiguity is fatal.
-# Registration parses the same CLI surface as the executable rather than copying command definitions.
-# Execution replaces the plugin process with the resolved atomic-runtime CLI.
-# The plugin never starts, stops, or depends on the Hermes gateway service.
-# Setup and execution resolve the runtime independently so a stale parser cannot redirect execution.
 def _iter_skill_roots():
     from agent.skill_utils import get_all_skills_dirs
     yield from map(lambda x:Path(x).expanduser(),get_all_skills_dirs())

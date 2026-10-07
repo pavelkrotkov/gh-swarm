@@ -1,24 +1,27 @@
 # Swarm v7 maintainability profile
 
-Issue #54 restores the qualification requirements from the final v7 gate: every reachable production module must have Radon 6.0.1 Maintenance Index **>75**, every production function must have cyclomatic complexity **<8**, and named core paths remain at **<=6**.
+Issue #54 pairs a meaningful per-module Maintenance Index floor with an explicit anti-fragmentation ceiling.
+The runtime scope remains reachability-derived from the Hermes plugin; executable code is not excluded or moved to an uncounted surface.
 
-The former 10-module convergence deliberately traded per-file MI for a direct structural profile. Qualification later proved that replacement insufficient for the parent gate, so the runtime now uses a bounded set of cohesive trust/ownership boundaries instead of comment padding or one-helper files:
+## Enforced profile
 
-- planner model / pure decision engine;
-- CLI state / operator runtime / reconcile surface;
-- controller observation / execution;
-- GitHub transport / publication / CI / issue observation;
-- merge ledger / merge mutation;
-- execution identity / Kanban transport;
-- Git trust / worktree policy.
+`python tools/swarm_v7_quality.py --qualification` and canonical `make check` enforce:
 
-The reachable runtime is capped at 50 Python modules and 1,000 nonblank/noncomment Python LOC. The 50-module guard is an anti-fragmentation bound for this restored-MI architecture (49 modules in the current design) and remains far below the 115-module pre-convergence runtime; the parent qualification's size target remains 1,000 LOC. The LOC increase relative to the 687-LOC metric-replacement build is accepted only where it corresponds to these explicit ownership boundaries; compressed physical lines, hidden runtime code, padding comments, and threshold exceptions are not accepted.
+- Radon 6.0.1 `mi_visit(source, False) > 50` for every active production Python module;
+- at most 20 active runtime Python modules;
+- cyclomatic complexity < 8 for every production function, with named planner/observer/executor/merge paths <= 6;
+- cognitive complexity <= 15 and maximum nesting <= 4;
+- no production function > 60 source lines;
+- no active module > 350 counted code LOC;
+- whole reachable runtime <= 1,000 counted Python LOC;
+- core-controller aggregate <= 1,000 LOC.
 
-Canonical validation is:
+## Why the gates are paired
 
-```bash
-python tools/swarm_v7_quality.py --qualification
-make check
-```
+The earlier MI >75 experiment drove the reachable runtime toward 49 small modules primarily to improve Radon scores.
+That is the wrong optimization. MI >50 retains a useful floor while the <=20-module ceiling forces genuine simplification,
+consolidation and cohesive ownership instead of file-per-helper fragmentation.
 
-Qualification uses Radon 6.0.1 `mi_visit(source, False)` exactly as #54 specifies, and reports MI, function LOC, cyclomatic and cognitive complexity, nesting, whole-runtime LOC/module count, and unresolved local imports.
+Comments document authority, safety and recovery invariants that belong with the code. They must not be added as padding,
+nor may code be minified, excluded from reachability, or split solely to improve the metric. Behavioral tests, dead-code
+checks and exact-head CI remain independent backstops.

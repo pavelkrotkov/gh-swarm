@@ -1,15 +1,38 @@
-# Deterministic worktree policy built only from durable Git facts.
-# One swarm issue owns one branch/worktree; prepared markers distinguish recovery from collision.
-# Workers remain the only owners of commit, push, and PR publication.
-# A fresh identity rejects remote/worktree collisions unless a durable prepared marker proves recovery.
-# Local-only orphan branches may be reclaimed only before any task/PR durable evidence exists.
-# Diverged local/remote branches fail closed; fast-forwardable remote authority is never rewritten.
-# Prepared markers are keyed by repository, branch and resolved worktree path to prevent cross-swarm reuse.
-# Git worktree prune/add is used only after branch ownership has been established.
+# Git trust and deterministic worktree policy share one durable repository boundary.
+# Repository binding, ref reads and ancestry are bounded and exact-SHA validated.
+# Worktree recovery never rewrites durable remote authority.
+# Workers remain the only owners of commit, push and PR publication.
+# Repository binding accepts only the configured GitHub origin or an explicitly local samefile origin.
+# Fresh identities reject remote/worktree collisions unless a durable prepared marker proves recovery.
+# Diverged branches fail closed; fast-forwardable remote authority is never rewritten.
+import hashlib,re
 from collections import namedtuple
-import hashlib, re
 from pathlib import Path
-from swarm_v7_git import GitRepository, WorkspaceError
+from swarm_v7_cli_process import run_process
+from swarm_v7_github import exact_sha
+_GITHUB=re.compile(r"(?:github\.com[/:])([^/]+/[^/]+?)(?:\.git)?$")
+class WorkspaceError(RuntimeError): pass
+def _local_origin(origin,expected):
+    try: return Path(origin).samefile(Path(expected))
+    except OSError: return False
+class GitRepository:
+    def __init__(self,repo_path,timeout_s=30.0): self.repo_path,self.timeout_s=Path(repo_path).resolve(),timeout_s
+    def run(self,args,*,cwd=None,check=True): return run_process(["git",*args],cwd=cwd or self.repo_path,check=check,timeout=self.timeout_s,error_type=WorkspaceError)
+    def out(self,args,*,cwd=None,check=True): return self.run(args,cwd=cwd,check=check).stdout.strip()
+    def common_dir(self,cwd=None): return Path(self.out(["rev-parse","--path-format=absolute","--git-common-dir"],cwd=cwd))
+    def validate_binding(self,expected):
+        if not Path(self.out(["rev-parse","--show-toplevel"])).samefile(self.repo_path): raise WorkspaceError(f"repo_path does not resolve to {self.repo_path}")
+        origin=self.out(["remote","get-url","origin"])
+        if not (((match:=_GITHUB.search(origin.rstrip("/"))) and match.group(1).lower()==expected.removesuffix(".git").lower()) or (not match and _local_origin(origin,expected))): raise WorkspaceError(f"origin {origin!r} does not match configured repo {expected!r}")
+    def _head(self,ref,missing=False):
+        if (code:=(proc:=self.run(["rev-parse","--verify","--quiet",f"{ref}^{{commit}}"],check=False)).returncode)==0: return exact_sha(proc.stdout.strip())
+        if code==1 and missing: return None
+        raise WorkspaceError(proc.stderr.strip() or f"cannot inspect {ref}")
+    def refresh(self,default,branch):
+        self.out(["fetch","--prune","origin","+refs/heads/*:refs/remotes/origin/*"]); return self._head(f"refs/remotes/origin/{default}"),self._head(f"refs/heads/{branch}",True),self._head(f"refs/remotes/origin/{branch}",True)
+    def ancestor(self,first,second):
+        if (code:=(proc:=self.run(["merge-base","--is-ancestor",first,second],check=False)).returncode) in (0,1): return code==0
+        raise WorkspaceError(proc.stderr.strip() or "git merge-base failed")
 WorkspaceSpec=namedtuple("WorkspaceSpec","repo default_branch branch worktree")
 class WorkspaceCollision(WorkspaceError): pass
 class GitWorkspace(GitRepository):
@@ -39,4 +62,3 @@ def branch_name(swarm,issue):
     if not re.fullmatch(r"[A-Za-z0-9._-]+",swarm or "") or issue<1: raise ValueError("invalid swarm identity")
     return f"swarm/{swarm}/{issue}"
 def worktree_path(repo_path,swarm,issue): branch_name(swarm,issue); repo=Path(repo_path).resolve(); return repo.parent/f".{repo.name}-swarm-worktrees"/f"{swarm}-{issue}"
-

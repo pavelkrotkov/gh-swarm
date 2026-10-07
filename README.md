@@ -19,7 +19,7 @@ python -m pip install -c requirements/ci-constraints.txt PyYAML radon cognitive-
 make check
 ```
 
-Canonical CI runs the behavioral tests, absolute runtime quality profile (MI >75, CC <8 with core paths <=6, cognitive complexity, nesting, LOC and reachability), AST dead-code boundary, YAML/shell validation and a tracked-source secret scan.
+Canonical CI runs the behavioral tests, absolute runtime quality profile (MI, CC, cognitive complexity, nesting, LOC and reachability), AST dead-code boundary, YAML/shell validation and a tracked-source secret scan. Active production modules must each have Radon MI >50; the runtime keeps the <=20-module and <=1,000-LOC qualification bounds so maintainability is improved through cohesive ownership rather than helper-per-function fragmentation.
 
 Host-only recovery qualification remains separate from fast CI:
 

@@ -5,7 +5,6 @@ from unittest.mock import Mock, patch
 SCRIPTS = Path(__file__).parents[1] / "skills" / "github-project-swarm" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 kb = importlib.import_module("swarm_v7_kanban")
-kb_state = importlib.import_module("swarm_v7_kanban_state")
 
 H1 = "1" * 40
 
@@ -81,13 +80,13 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(TypeError): kb.TaskSpec("work","body","dir:/tmp","model")
     def test_stale_or_expired_running_run_is_retryable_failure(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task_id=adapter.create(spec(),"semantic"); fake.tasks[task_id]["status"]="running"; old={"id":9,"started_at":120,"ended_at":125,"outcome":"completed","max_runtime_seconds":20}; active={"id":10,"started_at":120,"ended_at":None,"outcome":None,"max_runtime_seconds":20}; fake.tasks[task_id]["runs"]=[active,old]
-        with patch.object(kb_state.time,"time",return_value=121): facts=adapter.observe(task_id)
+        with patch.object(kb.time,"time",return_value=121): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("running",kb.Outcome.ACTIVE)); fake.tasks[task_id]["runs"]=[old]
-        with patch.object(kb_state.time,"time",return_value=126): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
-        with patch.object(kb_state.time,"time",return_value=246): facts=adapter.observe(task_id)
+        with patch.object(kb.time,"time",return_value=126): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
+        with patch.object(kb.time,"time",return_value=246): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("run_completed",kb.Outcome.FAILURE)); fake.tasks[task_id]["runs"]=[active]
-        with patch.object(kb_state.time,"time",return_value=141): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
-        with patch.object(kb_state.time,"time",return_value=260): facts=adapter.observe(task_id)
+        with patch.object(kb.time,"time",return_value=141): self.assertEqual(adapter.observe(task_id).outcome,kb.Outcome.ACTIVE)
+        with patch.object(kb.time,"time",return_value=260): facts=adapter.observe(task_id)
         self.assertEqual((facts.status,facts.outcome),("timed_out",kb.Outcome.FAILURE))
     def test_watchdog_reclaims_hung_adjudicator_without_duplicate_dispatch(self):
         fake=FakeHermes(); adapter=kb.KanbanAdapter("board",runner=fake); task=adapter.create(spec(title="[adjudicate c4d61e5a] #58"),"semantic"); run={"id":104,"started_at":8,"ended_at":None,"status":"running","outcome":None,"max_runtime_seconds":1800}; fake.tasks[task].update(status="running",worker_pid=2928396,claim_lock="host:claim",expire_on_dispatch=True,runs=[run]); result=adapter.watchdog()
