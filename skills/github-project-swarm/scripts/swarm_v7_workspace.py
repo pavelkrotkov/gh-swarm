@@ -1,20 +1,21 @@
-# Deterministic crash-safe Git workspace authority.
-# Repository/origin binding, remote snapshots, ancestry and worktree ownership are Git
-# facts; one swarm/issue maps to one branch/worktree. Recovery requires durable Git facts
-# or the exact prepared marker. Workers alone own commit, push and PR publication.
+# Git trust and deterministic worktree policy share one durable repository boundary.
+# Repository binding, ref reads and ancestry are bounded and exact-SHA validated.
+# Worktree recovery never rewrites durable remote authority.
+# Workers remain the only owners of commit, push and PR publication.
+# Repository binding accepts only the configured GitHub origin or an explicitly local samefile origin.
+# Fresh identities reject remote/worktree collisions unless a durable prepared marker proves recovery.
+# Diverged branches fail closed; fast-forwardable remote authority is never rewritten.
+import hashlib,re
 from collections import namedtuple
-import hashlib, re
 from pathlib import Path
 from swarm_v7_cli_process import run_process
 from swarm_v7_github import exact_sha
 _GITHUB=re.compile(r"(?:github\.com[/:])([^/]+/[^/]+?)(?:\.git)?$")
-WorkspaceSpec=namedtuple("WorkspaceSpec","repo default_branch branch worktree")
 class WorkspaceError(RuntimeError): pass
-class WorkspaceCollision(WorkspaceError): pass
 def _local_origin(origin,expected):
     try: return Path(origin).samefile(Path(expected))
     except OSError: return False
-class GitWorkspace:
+class GitRepository:
     def __init__(self,repo_path,timeout_s=30.0): self.repo_path,self.timeout_s=Path(repo_path).resolve(),timeout_s
     def run(self,args,*,cwd=None,check=True): return run_process(["git",*args],cwd=cwd or self.repo_path,check=check,timeout=self.timeout_s,error_type=WorkspaceError)
     def out(self,args,*,cwd=None,check=True): return self.run(args,cwd=cwd,check=check).stdout.strip()
@@ -32,6 +33,9 @@ class GitWorkspace:
     def ancestor(self,first,second):
         if (code:=(proc:=self.run(["merge-base","--is-ancestor",first,second],check=False)).returncode) in (0,1): return code==0
         raise WorkspaceError(proc.stderr.strip() or "git merge-base failed")
+WorkspaceSpec=namedtuple("WorkspaceSpec","repo default_branch branch worktree")
+class WorkspaceCollision(WorkspaceError): pass
+class GitWorkspace(GitRepository):
     def ensure_branch(self,branch,base,local,remote,started):
         if not local: self.out(["branch",branch,remote if remote else base]); return  # Git creation closes races after the snapshot.
         if not remote or self.ancestor(remote,local): return

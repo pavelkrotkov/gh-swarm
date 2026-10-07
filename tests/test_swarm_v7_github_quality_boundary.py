@@ -5,8 +5,8 @@ for path in (SCRIPTS, TOOLS):
     if str(path) not in sys.path: sys.path.insert(0, str(path))
 import swarm_v7_quality as quality
 v7 = importlib.import_module("swarm_v7"); gh = importlib.import_module("swarm_v7_github"); H2 = "2" * 40
-OWNED_MODULE_NAMES = ("swarm_v7_github.py",)
-RETIRED_EVIDENCE_MODULES = ("swarm_v7_github_transport.py", "swarm_v7_github_types.py", "swarm_v7_github_decision.py", "swarm_v7_github_markers.py", "swarm_v7_github_publication_types.py", "swarm_v7_github_evidence.py", "swarm_v7_github_ci.py", "swarm_v7_github_support.py")
+OWNED_MODULE_NAMES = ("swarm_v7_github.py", "swarm_v7_github_transport.py", "swarm_v7_github_publication.py", "swarm_v7_github_ci.py")
+RETIRED_EVIDENCE_MODULES = ("swarm_v7_github_types.py", "swarm_v7_github_decision.py", "swarm_v7_github_markers.py", "swarm_v7_github_publication_types.py", "swarm_v7_github_evidence.py", "swarm_v7_github_support.py")
 def config(): return v7.ManifestV7(swarm_id="test", repo="owner/repo", default_branch="main", issues=(45, 46), worker_model="worker", reviewer_models=("reviewer-a", "reviewer-b"), adjudicator_model="adjudicator")
 class SwarmV7GitHubQualityTests(unittest.TestCase):
     def test_owned_boundary_is_active_and_within_staged_size_guardrail(self):
