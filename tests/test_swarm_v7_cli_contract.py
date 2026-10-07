@@ -38,7 +38,7 @@ class CliContractTests(unittest.TestCase):
         self.assertEqual(planner.call_count,2); self.assertEqual(apply.call_args.args[0].config.merge_policy,"manual"); self.assertIs(apply.call_args.args[1],manual)
     def test_retire_persists_reason_and_removes_issue_from_active_scope(self):
         rt=runtime(); adapter=Mock(); adapter.watchdog.return_value={}; adapter.block_issue.return_value=("task-7",)
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli_runtime,"KanbanAdapter",return_value=adapter),redirect_stdout(StringIO()):
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli_runtime,"KanbanAdapter",return_value=adapter),patch.object(cli,"KanbanAdapter",return_value=adapter),redirect_stdout(StringIO()):
             cli.save(rt); cli.retire(SimpleNamespace(name="demo",issue=7,reason="closed externally")); saved=cli.load(Path(td)/"demo.json"); event=json.loads((Path(td)/"demo.journal.jsonl").read_text())
             with self.assertRaisesRegex(RuntimeError,r"retired.*closed externally"): cli.explain(name="demo",issue=7)
             with patch.object(cli,"plan_once") as plan: self.assertEqual(cli.reconcile_runtime(saved),[]); plan.assert_not_called()
@@ -54,7 +54,7 @@ class CliContractTests(unittest.TestCase):
     def test_unsafe_observation_is_journaled_and_validate_fails_closed(self):
         rt=runtime(); obs=Observation(issue_number=7,unsafe_reason="observation failed"); gh=GitHubIssueObservation(7,"CLOSED",(),None,obs,"observation failed"); item=PlannedIssue(IssueObservation(gh,obs,{}),Plan(Phase.EXECUTION_STALLED,None,"unsafe observation: observation failed",None,None))
         adapter=Mock(); adapter.watchdog.return_value={}
-        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",return_value=item),patch.object(cli,"save") as save:
+        with tempfile.TemporaryDirectory() as td,patch.object(cli,"STATE",Path(td)),patch.object(cli_state,"STATE",Path(td)),patch.object(cli_runtime,"STATE",Path(td)),patch.object(cli,"KanbanAdapter",return_value=adapter),patch.object(cli,"plan_once",return_value=item),patch.object(cli_runtime,"plan_once",return_value=item),patch.object(cli,"save") as save:
             errors=cli.reconcile_runtime(rt); event=json.loads((Path(td)/"demo.journal.jsonl").read_text())
             with patch.object(cli_runtime,"doctor"),patch.object(cli_runtime,"selected",return_value=[Path("demo.json")]),patch.object(cli_runtime,"load",return_value=rt),self.assertRaisesRegex(RuntimeError,r"demo #7: observation failed"): cli.validate(name="demo")
         self.assertEqual(errors,["demo #7: observation failed"]); self.assertEqual(event["outcome"],"error"); self.assertIn("demo [owner/repo] #7: state=CLOSED",cli._render(cli._snapshot(rt,7,item))); save.assert_not_called()
