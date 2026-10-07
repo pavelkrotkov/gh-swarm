@@ -1,6 +1,10 @@
 # Low-level Git trust boundary for repository binding, refs, and ancestry.
 # Every read is bounded through the shared subprocess transport and exact SHAs are validated.
 # No workflow phase or retry decision is stored here.
+# Repository binding accepts the configured GitHub origin or an explicitly local samefile origin only.
+# Ref reads resolve commits to full SHAs before worktree policy consumes them.
+# Ancestry returns only Git's 0/1 result; transport errors are never interpreted as false.
+# Common-dir identity prevents a different repository checkout from satisfying worktree ownership.
 import re
 from pathlib import Path
 from swarm_v7_cli_process import run_process

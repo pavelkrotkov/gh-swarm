@@ -1,24 +1,10 @@
-# Schema-7 operator configuration and normalized workflow evidence.
-# The manifest contains policy and issue membership only; GitHub remains semantic authority.
-# Validation is fail-closed at construction so the pure planner never receives malformed policy.
-from dataclasses import dataclass; from enum import Enum; import re
-_FORBIDDEN=frozenset("state finished completed completion acceptance accepted current_task review round repairs ci_head edges dependencies".split()); _ALLOWED={"schema","id","repo","default_branch","issues","models","ci_mode","no_merge_labels","paused","merge_policy"}; _DEFAULT_LABELS=("no-merge","do-not-merge","hold-merge")
-def _need(ok,message):
-    if not ok: raise ValueError(message)
-def _text(value,name): _need(isinstance(value,str) and bool(value.strip()),f"{name} must be a non-empty string"); return value
-def _items(value,message,required=True): _need(isinstance(value,(list,tuple)) and (bool(value) or not required),message); return tuple(value)
-@dataclass(frozen=True)
-class ManifestV7:
-    swarm_id:str; repo:str; default_branch:str; issues:tuple[int,...]; worker_model:str; reviewer_models:tuple[str,...]; adjudicator_model:str; ci_required:bool=True; no_merge_labels:tuple[str,...]=_DEFAULT_LABELS; paused:bool=False; merge_policy:str="manual"; schema:int=7
-    @classmethod
-    def from_dict(cls,raw):
-        _need(not (bad:=set(raw)&_FORBIDDEN),f"schema 7 forbids semantic state keys: {sorted(bad)}"); _need(not (bad:=set(raw)-_ALLOWED),f"unknown schema-7 manifest keys: {sorted(bad)}"); _need(raw.get("schema")==7,"schema must be 7")
-        models=raw.get("models"); _need(isinstance(models,dict),"models must be a mapping"); _need(set(models)=={"worker","reviewers","adjudicator"},"models must contain only worker, reviewers, and adjudicator")
-        reviewers=tuple(_text(v,"models.reviewers") for v in _items(models.get("reviewers"),"reviewer models must be a non-empty sequence")); worker=_text(models.get("worker"),"models.worker"); adjudicator=_text(models.get("adjudicator"),"models.adjudicator")
-        mode=raw.get("ci_mode","required"); _need(mode in {"required","none"},"ci_mode must be 'required' or 'none'"); labels=_items(raw.get("no_merge_labels",_DEFAULT_LABELS),"no_merge_labels must be a sequence of non-empty strings",False); _need(all(isinstance(x,str) and bool(x) for x in labels),"no_merge_labels must be a sequence of non-empty strings"); policy=raw.get("merge_policy","manual"); _need(policy in {"automatic","manual"},"merge_policy must be 'automatic' or 'manual'")
-        paused=raw.get("paused",False); _need(isinstance(paused,bool),"paused must be boolean"); identity=tuple(_text(raw.get(name),name) for name in ("id","repo","default_branch")); issues=_items(raw.get("issues"),"issues must be a sequence",False); _need(all(type(x) is int and x>0 for x in issues),"issues must contain positive integers")
-        return cls(*identity,issues,worker,reviewers,adjudicator,mode=="required",labels,paused,policy)
-    def to_dict(self): return {"schema":7,"id":self.swarm_id,"repo":self.repo,"default_branch":self.default_branch,"issues":list(self.issues),"models":{"worker":self.worker_model,"reviewers":list(self.reviewer_models),"adjudicator":self.adjudicator_model},"ci_mode":"required" if self.ci_required else "none","no_merge_labels":list(self.no_merge_labels),"paused":self.paused,"merge_policy":self.merge_policy}
+# Planner evidence is normalized before any phase/action decision is made.
+# Enums distinguish missing/unknown evidence from negative evidence; callers must not collapse them.
+# Observation contains fresh external facts only and carries no local acceptance/completion cache.
+# Decision tables below encode precedence but perform no I/O.
+from dataclasses import dataclass
+from enum import Enum
+import re
 def _enum(name,values): return Enum(name,{v:v for v in values.split()},type=str)
 Phase=_enum("Phase","MERGED WAITING_DEPENDENCY NEEDS_IMPLEMENTATION IMPLEMENTATION_RUNNING WAITING_CI NEEDS_REVIEW REVIEW_RUNNING NEEDS_ADJUDICATION ADJUDICATION_RUNNING NEEDS_REVISION REVISION_RUNNING AWAITING_MANUAL_MERGE READY_TO_MERGE MERGE_BLOCKED EXECUTION_STALLED"); Action=_enum("Action","START_IMPLEMENTATION START_REVIEW START_ADJUDICATION START_REVISION MERGE"); DependencyState=_enum("DependencyState","READY BLOCKED UNKNOWN"); ExecutionState=_enum("ExecutionState","IDLE RUNNING FAILED"); CiState=_enum("CiState","NOT_APPLICABLE PENDING PASSED FAILED UNKNOWN"); ReviewState=_enum("ReviewState","NONE RUNNING APPROVED CHANGES_REQUESTED DISPUTED UNKNOWN"); AdjudicationDecision=_enum("AdjudicationDecision","NONE ACCEPT REVISE UNKNOWN"); MergeGate=_enum("MergeGate","READY BLOCKED UNKNOWN")
 @dataclass(frozen=True)
@@ -28,3 +14,4 @@ class Observation:
 class Plan:
     phase:Phase; action:Action|None; reason:str; pr_head:str|None; intent_key:str|None; would_action:Action|None=None
 _STALL=Phase.EXECUTION_STALLED; _SHA=re.compile(r"^[0-9a-f]{40}$"); _DEP={DependencyState.BLOCKED:(Phase.WAITING_DEPENDENCY,None,"a dependency is not merged"),DependencyState.UNKNOWN:(_STALL,None,"dependency state is unknown")}; _EXEC={ExecutionState.RUNNING:(Phase.IMPLEMENTATION_RUNNING,None,"implementation task is running"),ExecutionState.FAILED:(_STALL,None,"implementation task failed")}; _CI={CiState.UNKNOWN:(_STALL,None,"required CI state is unknown"),CiState.NOT_APPLICABLE:(_STALL,None,"required CI state is unknown"),CiState.PENDING:(Phase.WAITING_CI,None,"required CI is pending"),CiState.FAILED:(Phase.NEEDS_REVISION,Action.START_REVISION,"required CI failed")}; _REVIEW={ReviewState.NONE:(Phase.NEEDS_REVIEW,Action.START_REVIEW,"current PR head has no completed review"),ReviewState.RUNNING:(Phase.REVIEW_RUNNING,None,"review is running for current PR head"),ReviewState.CHANGES_REQUESTED:(Phase.NEEDS_REVISION,Action.START_REVISION,"review requested changes"),ReviewState.UNKNOWN:(_STALL,None,"review state is unknown")}
+

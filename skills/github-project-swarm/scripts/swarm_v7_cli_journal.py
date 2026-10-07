@@ -1,46 +1,15 @@
-# Crash-safe local runtime configuration, attempt cursors, and diagnostic journal.
-# Semantic workflow truth is deliberately absent: every reconcile re-observes GitHub.
-# Manifest replacement is atomic and fsynced; the journal records intent/outcome but never authorizes work.
-import errno,json,os,tempfile,time,uuid
-from contextlib import contextmanager
-from pathlib import Path
+# Journal rows are diagnostics and merge-attribution receipts, never workflow authority.
+# Merge intent is recorded before mutation so an interrupted request remains attributable after restart.
+# Request success is not completion: only a later fresh GitHub merged_at confirms the merge.
+# Unknown request outcomes stay unknown until GitHub resolves them.
+# Journal writes are append-only complete JSON lines so torn trailing writes are ignored by attribution.
+# Correlation IDs bind intent and outcome without becoming workflow identity.
+# External merges remain distinguishable from controller-requested merges.
+import json,time,uuid
 from swarm_v7 import Action
-from swarm_v7_controller import RuntimeManifest, apply_plan, observation_payload, plan_payload
+from swarm_v7_controller import apply_plan, observation_payload, plan_payload
 from swarm_v7_merge import MergeRequestError
-try: import fcntl
-except ImportError: fcntl=None
-HOME=Path(os.environ.get("HERMES_HOME",Path.home()/".hermes")).expanduser(); STATE=Path(os.environ.get("HERMES_SWARM_STATE_DIR",HOME/"swarms")).expanduser()
-def manifest_path(swarm_id): return STATE/f"{swarm_id}.json"
-def manifests(): STATE.mkdir(parents=True,exist_ok=True); return sorted(STATE.glob("*.json"))
-def selected(*,name=None,all_swarms=False):
-    if name:
-        if not (path:=manifest_path(name)).exists(): raise RuntimeError(f"unknown swarm {name}")
-        return [path]
-    if len(paths:=manifests())==1 or all_swarms: return paths
-    raise RuntimeError("Specify --name or --all")
-@contextmanager
-def locked(path,*,nonblocking=False):
-    if fcntl is None: raise RuntimeError("swarm reconcile locking requires POSIX flock support")
-    path.parent.mkdir(parents=True,exist_ok=True)
-    with open(path,"w",encoding="utf-8") as handle: fcntl.flock(handle,fcntl.LOCK_EX|(fcntl.LOCK_NB if nonblocking else 0)); yield
-def _fsync_directory(path):
-    if os.name=="nt": return
-    fd=os.open(path,os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
-    try: os.fsync(fd)
-    except OSError as exc:
-        if exc.errno not in (errno.EINVAL,errno.ENOTSUP): raise
-    finally: os.close(fd)
-def save(runtime):
-    STATE.mkdir(parents=True,exist_ok=True); target=manifest_path(runtime.config.swarm_id); fd,tmp=tempfile.mkstemp(prefix=f".{runtime.config.swarm_id}.",suffix=".tmp",dir=STATE)
-    try:
-        with os.fdopen(fd,"w",encoding="utf-8") as out: json.dump(runtime.to_dict(),out,ensure_ascii=False,indent=2); out.write("\n"); out.flush(); os.fsync(out.fileno())
-        os.replace(tmp,target); _fsync_directory(STATE)
-    finally: Path(tmp).unlink(missing_ok=True)
-def load(path):
-    raw=json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw,dict): raise RuntimeError(f"{path}: swarm manifest must be a JSON object")
-    if raw.get("schema")!=7: raise RuntimeError(f"{path}: unsupported swarm schema {raw.get('schema')!r}; schema 5/6 migration is intentionally disabled. Initialize a fresh v7 swarm.")
-    return RuntimeManifest.from_dict(raw)
+from swarm_v7_cli_manifest import STATE
 def _journal_outcome(error,result): return "error" if error else "none" if result is None else result.outcome
 def journal(runtime,issue,planned,result,elapsed_ms,error=None,*,correlation_id=None,event="reconcile",receipt=None):
     fields=dict.fromkeys(("phase","action","would_action","reason","pr_head","intent_key")) if planned is None else plan_payload(planned.plan); gates=[] if planned is None else observation_payload(planned.observation,runtime.config)["gates"]; row={"ts":time.time(),"correlation_id":correlation_id,"event":event,"swarm":runtime.config.swarm_id,"repo":runtime.config.repo,"issue":issue,"task_ids":[] if result is None else list(result.task_ids),"outcome":_journal_outcome(error,result),"elapsed_ms":elapsed_ms,"error":None if error is None else str(error),"detail":None if result is None else result.detail,"gates":gates,**fields,**(receipt or {})}; STATE.mkdir(parents=True,exist_ok=True)

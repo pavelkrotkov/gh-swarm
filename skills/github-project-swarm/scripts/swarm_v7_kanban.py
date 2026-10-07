@@ -1,27 +1,12 @@
-# Hermes Kanban transport and execution-status observation only.
-# It never supplies review, merge, dependency, or completion authority.
-# Blocking terminal cards preserves evidence while removing stale work from dispatch.
-from enum import Enum
-import json,time
+# Hermes Kanban transport creates/observes/blocks execution cards but owns no semantic workflow state.
+# Live create prepares worker GitHub auth before an attempt can be consumed.
+# Watchdog reclamation changes liveness only and preserves durable task/run evidence.
+import json
 from swarm_v7_cli_process import run_command
-from swarm_v7_execution import Outcome, TaskFacts, TaskSpec, attempt_key, create_args, ensure_worker_github_auth, semantic_key, worker_body
-_STATUS={**{name:Outcome.ACTIVE for name in ("todo","ready","running","review")},"done":Outcome.SUCCESS,**{name:Outcome.FAILURE for name in ("blocked","archived","triage")}}; _RETRY_GRACE_S=120; _REQUIRED=("--body","--workspace","--branch","--completion-contract","--idempotency-key","--max-retries","--max-runtime","--assignee","--skill","--model","--provider"); KanbanExecutionError=RuntimeError
-def _task(raw):
-    row=raw.get("task",raw) if isinstance(raw,dict) else {}; task_id=row.get("id") or row.get("task_id") or row.get("taskId")
-    if not task_id: raise KanbanExecutionError("Hermes Kanban task response is malformed or missing id")
-    return row,str(task_id)
-# Closed runs under a running card, or open runs past their own limit, are stale execution facts.
-# Give Hermes two default dispatcher ticks to launch its internal retry before swarm replay.
-# Run ordering is normalized before this check; CLI result order is not an execution contract.
-# Terminal cleanup blocks matching active cards instead of archiving/deleting them.
-# Blocked cards preserve task/run evidence and repeated cleanup becomes a no-op.
-# Board names and issue numbers can collide; branch/publication markers bind cards to one swarm.
-# Ownership reads only fixed generated header lines; copied issue text below them is untrusted.
-# Marker type is bound to task title so review/adjudication text cannot claim worker ownership.
-def _owned(title,lines,swarm,issue): return len(lines)>2 and lines[2]==f"Expected branch: swarm/{swarm}/{issue}" if title.startswith(("[implement]","[revise]")) else len(lines)>2 and lines[2].startswith(f"Required publication marker: <!-- hermes-swarm-review:{swarm}:{issue}:") if title.startswith("[review ") else len(lines)>1 and lines[1].startswith(f"Required adjudication marker: <!-- hermes-swarm-adjudication:{swarm}:{issue}:") if title.startswith("[adjudicate ") else False
-def _issue_task(row,swarm,issue): title=str(row.get("title") or ""); number=title.partition("] #")[2].split(" ",1)[0]; return _STATUS.get(str(row.get("status") or "").strip().lower()) is Outcome.ACTIVE and number==str(issue) and _owned(title,str(row.get("body") or "").splitlines(),swarm,issue)
-def _running_run(status,runs): return runs[-1] if status=="running" and runs else {}
-def _run_state(status,runs): run=_running_run(status,runs); ended=run.get("ended_at"); now=time.time(); started,limit=run.get("started_at"),run.get("max_runtime_seconds"); return (f"run_{run.get('outcome')}",Outcome.FAILURE) if ended is not None and now-ended>=_RETRY_GRACE_S else ("timed_out",Outcome.FAILURE) if ended is None and None not in (started,limit) and now-started>=limit+_RETRY_GRACE_S else (status,_STATUS[status])
+from swarm_v7_auth import ensure_worker_github_auth
+from swarm_v7_execution import TaskSpec,attempt_key,create_args,semantic_key,worker_body
+from swarm_v7_kanban_state import KanbanExecutionError,Outcome,TaskFacts,_issue_task,_run_state,_task
+_REQUIRED=("--body","--workspace","--branch","--completion-contract","--idempotency-key","--max-retries","--max-runtime","--assignee","--skill","--model","--provider")
 class KanbanAdapter:
     def __init__(self,board,cwd=None,timeout_s=30.0,runner=None): self.board,self.cwd,self.timeout_s,self.runner,self.live=board,cwd,timeout_s,runner or (lambda cmd,cwd,timeout:run_command(cmd,cwd,timeout=timeout)),runner is None
     def _run(self,args): return self.runner(("hermes","kanban","--board",self.board,*args,"--json"),self.cwd,self.timeout_s)

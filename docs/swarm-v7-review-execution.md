@@ -1,7 +1,7 @@
 # Swarm v7 exact-head review execution
 
 Issue #49 makes review and adjudication durable semantic slots keyed by the exact PR head.
-Task specification lives in `swarm_v7_execution.py`; exact-head slot reconciliation is owned by `swarm_v7_controller_execution.py`.
+Exact-head task specification and slot reconciliation are owned by `skills/github-project-swarm/scripts/swarm_v7_review.py`.
 
 ## Identity
 

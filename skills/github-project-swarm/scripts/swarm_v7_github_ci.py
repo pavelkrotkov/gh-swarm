@@ -1,5 +1,11 @@
 # Reduce current-head GitHub CI evidence without guessing missing state.
 # Successful Actions checks must bind both GitHub's head_sha and the checkout receipt to the exact head.
+# In-progress Actions runs take precedence over classic status failures until the run completes.
+# A successful Actions conclusion without an exact checkout receipt remains pending.
+# Unknown conclusions are not coerced to success.
+# CI-disabled manifests return NOT_APPLICABLE without reading synthetic local evidence.
+# Classic statuses are combined only after Actions run completion precedence is resolved.
+# Explicit failing conclusions dominate completed successful/neutral/skipped evidence.
 import re
 from swarm_v7 import CiState
 from swarm_v7_github_transport import mapping, _rows

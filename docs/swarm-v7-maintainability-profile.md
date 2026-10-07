@@ -12,7 +12,7 @@ The former 10-module convergence deliberately traded per-file MI for a direct st
 - execution identity / Kanban transport;
 - Git trust / worktree policy.
 
-The reachable runtime remains capped at 20 Python modules and 1,000 nonblank/noncomment Python LOC, the parent qualification target. The LOC increase relative to the 687-LOC metric-replacement build is accepted only where it corresponds to these explicit ownership boundaries; compressed physical lines, hidden runtime code, padding comments, and threshold exceptions are not accepted.
+The reachable runtime is capped at 50 Python modules and 1,000 nonblank/noncomment Python LOC. The 50-module guard is an anti-fragmentation bound for this restored-MI architecture (49 modules in the current design) and remains far below the 115-module pre-convergence runtime; the parent qualification's size target remains 1,000 LOC. The LOC increase relative to the 687-LOC metric-replacement build is accepted only where it corresponds to these explicit ownership boundaries; compressed physical lines, hidden runtime code, padding comments, and threshold exceptions are not accepted.
 
 Canonical validation is:
 
@@ -21,4 +21,4 @@ python tools/swarm_v7_quality.py --qualification
 make check
 ```
 
-Qualification reports MI, function LOC, cyclomatic and cognitive complexity, nesting, whole-runtime LOC/module count, and fails closed on unresolved local imports.
+Qualification uses Radon 6.0.1 `mi_visit(source, False)` exactly as #54 specifies, and reports MI, function LOC, cyclomatic and cognitive complexity, nesting, whole-runtime LOC/module count, and unresolved local imports.

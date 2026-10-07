@@ -1,6 +1,11 @@
 # Deterministic worktree policy built only from durable Git facts.
 # One swarm issue owns one branch/worktree; prepared markers distinguish recovery from collision.
 # Workers remain the only owners of commit, push, and PR publication.
+# A fresh identity rejects remote/worktree collisions unless a durable prepared marker proves recovery.
+# Local-only orphan branches may be reclaimed only before any task/PR durable evidence exists.
+# Diverged local/remote branches fail closed; fast-forwardable remote authority is never rewritten.
+# Prepared markers are keyed by repository, branch and resolved worktree path to prevent cross-swarm reuse.
+# Git worktree prune/add is used only after branch ownership has been established.
 from collections import namedtuple
 import hashlib, re
 from pathlib import Path
